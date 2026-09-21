@@ -42,6 +42,9 @@ def main(argv: list[str] | None = None) -> int:
         choices=["tesseract", "paddle"],
         help="переопределить движок профиля (paddle требует образ full)",
     )
+    parser.add_argument(
+        "--no-text-layer", action="store_true", help="игнорировать текстовый слой, всё через OCR"
+    )
     parser.add_argument("--json", dest="json_path", help="куда писать отчёт с warnings и полями")
     args = parser.parse_args(argv)
 
