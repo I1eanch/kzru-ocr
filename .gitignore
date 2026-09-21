@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# артефакты прогонов и данные
+out/
+bench/pred/
+bench/work/
+bench/data/*.pdf
+!bench/data/.gitkeep
+*.traineddata
+train/data/
+train/synth/
+
+.DS_Store

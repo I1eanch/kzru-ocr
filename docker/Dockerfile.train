@@ -1,0 +1,71 @@
+# syntax=docker/dockerfile:1
+#
+# Образ для дообучения Tesseract LSTM. Отдельно от prod-образа сознательно:
+# training tools тянут pango/cairo/icu и десятки мегабайт, которым нечего
+# делать в inference-контейнере.
+#
+# Debian не пакетирует lstmtraining/unicharset_extractor, поэтому tesseract
+# собирается из исходников с --enable-training. Сборка одноразовая.
+#
+#   docker build -f docker/Dockerfile.train -t kzru-ocr:train .
+#   docker run --rm -v "$PWD":/work -w /work kzru-ocr:train \
+#     python train/make_synth.py --out train/synth --count 30000
+#   docker run --rm -v "$PWD":/work -w /work kzru-ocr:train \
+#     make -C /opt/tesstrain training MODEL_NAME=kzru_doc START_MODEL=kaz \
+#       TESSDATA=/opt/tessdata_best DATA_DIR=/work/train/data \
+#       GROUND_TRUTH_DIR=/work/train/synth EPOCHS=30 \
+#       WORDLIST_FILE=/work/ocr/data/kzru.user-words
+
+FROM debian:bookworm-slim AS build
+
+ARG TESSERACT_TAG=5.3.4
+ARG LEPTONICA_TAG=1.84.1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential automake libtool pkg-config git ca-certificates curl \
+        libleptonica-dev libpng-dev libjpeg62-turbo-dev libtiff-dev zlib1g-dev \
+        libicu-dev libpango1.0-dev libcairo2-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 --branch "$TESSERACT_TAG" https://github.com/tesseract-ocr/tesseract.git /src/tesseract \
+    && cd /src/tesseract \
+    && ./autogen.sh \
+    && ./configure --disable-debug --disable-graphics \
+    && make -j"$(nproc)" \
+    && make training -j"$(nproc)" \
+    && make install && make training-install \
+    && ldconfig
+
+
+FROM python:3.12-slim-bookworm AS train
+
+ENV PYTHONUNBUFFERED=1 \
+    OMP_NUM_THREADS=1 \
+    TESSDATA_PREFIX=/opt/tessdata_best
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        make wget git bash findutils unzip curl ca-certificates \
+        libleptonica-dev libicu72 libpango-1.0-0 libpangocairo-1.0-0 libcairo2 \
+        libtiff6 libjpeg62-turbo libpng16-16 \
+        fonts-dejavu-core fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /usr/local/bin/ /usr/local/bin/
+COPY --from=build /usr/local/lib/ /usr/local/lib/
+COPY --from=build /usr/local/share/tessdata/ /usr/local/share/tessdata/
+RUN ldconfig
+
+ARG TESSDATA_BEST_REF=4.1.0
+RUN mkdir -p /opt/tessdata_best \
+    && for lang in rus kaz osd; do \
+         curl -fsSL -o "/opt/tessdata_best/$lang.traineddata" \
+           "https://github.com/tesseract-ocr/tessdata_best/raw/${TESSDATA_BEST_REF}/${lang}.traineddata"; \
+       done
+
+RUN git clone --depth 1 https://github.com/tesseract-ocr/tesstrain.git /opt/tesstrain \
+    && pip install --no-cache-dir -r /opt/tesstrain/requirements.txt
+
+RUN pip install --no-cache-dir opencv-python-headless numpy Pillow
+
+WORKDIR /work
+CMD ["bash"]

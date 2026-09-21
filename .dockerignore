@@ -1,0 +1,17 @@
+.git
+.gitignore
+__pycache__
+**/__pycache__
+*.pyc
+.venv
+venv
+out
+bench/pred
+bench/work
+bench/scans
+train/data
+train/synth
+*.traineddata
+README.md
+php
+docs

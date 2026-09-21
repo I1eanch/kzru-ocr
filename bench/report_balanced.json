@@ -1,0 +1,272 @@
+[
+  {
+    "file": "doc_000_ustav.pdf",
+    "profile": "balanced",
+    "pages": 2,
+    "elapsed_s": 4.464,
+    "mean_conf": 0.9417,
+    "sources": {
+      "0": "ocr",
+      "1": "ocr"
+    },
+    "fields": {
+      "bin": [
+        "218196001339",
+        "026542351160"
+      ],
+      "amounts": [
+        "1250000"
+      ],
+      "dates": [
+        "2021-05-24"
+      ]
+    },
+    "warnings": [
+      {
+        "type": "text_layer_rejected",
+        "page": 0,
+        "detail": "слой пуст или почти пуст"
+      },
+      {
+        "type": "text_layer_rejected",
+        "page": 1,
+        "detail": "слой пуст или почти пуст"
+      }
+    ]
+  },
+  {
+    "file": "doc_001_dogovor.pdf",
+    "profile": "balanced",
+    "pages": 1,
+    "elapsed_s": 2.369,
+    "mean_conf": 0.9279,
+    "sources": {
+      "0": "ocr"
+    },
+    "fields": {
+      "bin": [
+        "184959310345",
+        "131647525530"
+      ],
+      "amounts": [
+        "750000"
+      ],
+      "dates": [
+        "2020-09-15"
+      ]
+    },
+    "warnings": [
+      {
+        "type": "text_layer_rejected",
+        "page": 0,
+        "detail": "слой пуст или почти пуст"
+      }
+    ]
+  },
+  {
+    "file": "doc_002_spravka.pdf",
+    "profile": "balanced",
+    "pages": 2,
+    "elapsed_s": 3.578,
+    "mean_conf": 0.9416,
+    "sources": {
+      "0": "ocr",
+      "1": "ocr"
+    },
+    "fields": {
+      "bin": [
+        "871012269168",
+        "139537672423"
+      ],
+      "amounts": [
+        "0"
+      ],
+      "dates": [
+        "2023-06-02"
+      ]
+    },
+    "warnings": [
+      {
+        "type": "text_layer_rejected",
+        "page": 0,
+        "detail": "слой пуст или почти пуст"
+      },
+      {
+        "type": "text_layer_rejected",
+        "page": 1,
+        "detail": "слой пуст или почти пуст"
+      },
+      {
+        "type": "amount_mismatch",
+        "page": 0,
+        "detail": "000 (три миллиона семьсот тысяч): цифрами 0, прописью 3700000"
+      }
+    ]
+  },
+  {
+    "file": "doc_003_ustav.pdf",
+    "profile": "balanced",
+    "pages": 1,
+    "elapsed_s": 2.734,
+    "mean_conf": 0.9294,
+    "sources": {
+      "0": "ocr"
+    },
+    "fields": {
+      "bin": [
+        "451462704829",
+        "095701543037"
+      ],
+      "amounts": [],
+      "dates": [
+        "2025-02-24"
+      ]
+    },
+    "warnings": [
+      {
+        "type": "text_layer_rejected",
+        "page": 0,
+        "detail": "слой пуст или почти пуст"
+      }
+    ]
+  },
+  {
+    "file": "doc_004_dogovor.pdf",
+    "profile": "balanced",
+    "pages": 1,
+    "elapsed_s": 2.242,
+    "mean_conf": 0.9163,
+    "sources": {
+      "0": "ocr"
+    },
+    "fields": {
+      "bin": [
+        "489638346575",
+        "871331509831"
+      ],
+      "amounts": [
+        "1250000"
+      ],
+      "dates": [
+        "2024-08-22"
+      ]
+    },
+    "warnings": [
+      {
+        "type": "text_layer_rejected",
+        "page": 0,
+        "detail": "слой пуст или почти пуст"
+      }
+    ]
+  },
+  {
+    "file": "doc_005_spravka.pdf",
+    "profile": "balanced",
+    "pages": 2,
+    "elapsed_s": 4.272,
+    "mean_conf": 0.9465,
+    "sources": {
+      "0": "ocr",
+      "1": "ocr"
+    },
+    "fields": {
+      "bin": [
+        "624731781086",
+        "763116566705"
+      ],
+      "amounts": [
+        "0"
+      ],
+      "dates": [
+        "2023-10-19"
+      ]
+    },
+    "warnings": [
+      {
+        "type": "text_layer_rejected",
+        "page": 0,
+        "detail": "слой пуст или почти пуст"
+      },
+      {
+        "type": "text_layer_rejected",
+        "page": 1,
+        "detail": "слой пуст или почти пуст"
+      },
+      {
+        "type": "amount_mismatch",
+        "page": 0,
+        "detail": "000 (один миллион двести пятьдесят тысяч): цифрами 0, прописью 1250000"
+      }
+    ]
+  },
+  {
+    "file": "doc_006_ustav.pdf",
+    "profile": "balanced",
+    "pages": 3,
+    "elapsed_s": 21.496,
+    "mean_conf": 0.9446,
+    "sources": {
+      "0": "ocr",
+      "1": "ocr",
+      "2": "ocr"
+    },
+    "fields": {
+      "bin": [
+        "606474687232",
+        "882081219132"
+      ],
+      "amounts": [
+        "1250000"
+      ],
+      "dates": [
+        "2020-07-07"
+      ]
+    },
+    "warnings": [
+      {
+        "type": "text_layer_rejected",
+        "page": 0,
+        "detail": "слой пуст или почти пуст"
+      },
+      {
+        "type": "text_layer_rejected",
+        "page": 1,
+        "detail": "слой пуст или почти пуст"
+      },
+      {
+        "type": "text_layer_rejected",
+        "page": 2,
+        "detail": "слой пуст или почти пуст"
+      }
+    ]
+  },
+  {
+    "file": "doc_007_dogovor.pdf",
+    "profile": "balanced",
+    "pages": 1,
+    "elapsed_s": 2.548,
+    "mean_conf": 0.8988,
+    "sources": {
+      "0": "ocr"
+    },
+    "fields": {
+      "bin": [
+        "985435346248",
+        "751079911835"
+      ],
+      "amounts": [
+        "12000000"
+      ],
+      "dates": [
+        "2025-07-03"
+      ]
+    },
+    "warnings": [
+      {
+        "type": "text_layer_rejected",
+        "page": 0,
+        "detail": "слой пуст или почти пуст"
+      }
+    ]
+  }
+]

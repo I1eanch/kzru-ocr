@@ -1,0 +1,6 @@
+# Опциональный движок. PyPI отдаёт колёса paddlepaddle только для
+# manylinux x86_64 — на arm64 этот файл не устанавливается, и это
+# ожидаемо: MVP работает на Tesseract, Paddle включается флагом
+# --engine paddle на amd64-хосте.
+paddlepaddle==3.0.0
+paddleocr>=3.0.0
