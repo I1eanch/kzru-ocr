@@ -310,15 +310,21 @@ def _run_jobs(jobs: list[PageJob], workers: int | None) -> list[PageResult]:
     if not jobs:
         return []
     if workers is None:
-        workers = max(1, min(len(jobs), available_cpus() - 1 or 1))
+        workers = max(1, min(len(jobs), available_cpus()))
     if workers == 1:
+        # Один воркер — пусть Tesseract использует все ядра сам: замерено
+        # wall 1.64 с против 1.99 с в однопоточном режиме на странице A4.
         return [_recognize_page(job) for job in jobs]
 
-    # Контекст spawn, а не fork. Родительский процесс к этому моменту уже
-    # работал с OpenCV (растеризация, оценка масштаба), и fork копирует его
-    # пул потоков в неконсистентном состоянии — воркеры зависают вместо
-    # работы. Замерено: при fork прогон с 2 воркерами не завершался минутами,
-    # тогда как один воркер проходил за 20 с.
+    # Tesseract ИГНОРИРУЕТ OMP_NUM_THREADS и берёт около 3.3 потоков на
+    # страницу (wall 1.64 с при 5.43 с CPU). Ограничивает его только
+    # OMP_THREAD_LIMIT. Без этого N воркеров требуют 3.3*N ядер, и на
+    # 4-ядерной машине параллелизм замедляет работу вместо ускорения.
+    os.environ["OMP_THREAD_LIMIT"] = "1"
     os.environ.setdefault("OMP_NUM_THREADS", "1")
+
+    # Контекст spawn, а не fork: родительский процесс уже работал с OpenCV
+    # (растеризация, оценка масштаба), и fork копирует его пул потоков в
+    # неконсистентном состоянии — воркеры зависают вместо работы.
     with ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("spawn")) as pool:
         return list(pool.map(_recognize_page, jobs))
