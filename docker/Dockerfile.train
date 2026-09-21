@@ -58,7 +58,7 @@ RUN ldconfig
 
 ARG TESSDATA_BEST_REF=4.1.0
 RUN mkdir -p /opt/tessdata_best \
-    && for lang in rus kaz osd; do \
+    && for lang in rus kaz osd eng; do \
          curl -fsSL -o "/opt/tessdata_best/$lang.traineddata" \
            "https://github.com/tesseract-ocr/tessdata_best/raw/${TESSDATA_BEST_REF}/${lang}.traineddata"; \
        done
