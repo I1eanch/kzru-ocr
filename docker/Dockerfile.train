@@ -46,6 +46,7 @@ ENV PYTHONUNBUFFERED=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends \
         make wget git bash findutils unzip curl ca-certificates \
         libleptonica-dev libicu72 libpango-1.0-0 libpangocairo-1.0-0 libcairo2 \
+        libgomp1 \
         libtiff6 libjpeg62-turbo libpng16-16 \
         fonts-dejavu-core fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
