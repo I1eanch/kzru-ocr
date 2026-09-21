@@ -18,6 +18,11 @@ from ocr.domain.amounts_ru import (
     parse_digits,
     words_to_number,
 )
+from ocr.domain.amounts_kk import (
+    NUMBER_WORDS as KK_NUMBER_WORDS,
+    normalize_token as kk_normalize_token,
+    words_to_number as kk_words_to_number,
+)
 from ocr.domain.bin_checksum import (
     CONFUSIONS,
     control_digit,
@@ -237,6 +242,39 @@ check("find_amounts", amts == [1250000, 300, 700], repr(amts))
 amts = find_amounts("500 000 (пятьсот тысяч) тенге")
 check("find_amounts skips parens", amts == [500000], repr(amts))
 
+# --- казахские числительные ------------------------------------------------
+
+check("kk words бес жүз мың", kk_words_to_number("бес жүз мың") == 500000)
+check("kk words бес жуз мын", kk_words_to_number("бес жуз мын") == 500000)
+check("kk words 1 250 000",
+      kk_words_to_number("бір миллион екі жүз елік мың") == 1250000)
+check("kk words он бес мың", kk_words_to_number("он бес мың") == 15000)
+check("kk words жиырма бір", kk_words_to_number("жиырма бір") == 21)
+check("kk words тоқсан тоғыз", kk_words_to_number("тоқсан тоғыз") == 99)
+check("kk words garbage -> None",
+      kk_words_to_number("бес жүз мың теңге емес") is None)
+check("kk words empty -> None", kk_words_to_number("") is None)
+
+# Нормализация не должна склеивать разные числительные в один ключ.
+kk_norm: dict[str, int] = {}
+kk_collision = False
+for word, value in KK_NUMBER_WORDS.items():
+    key = kk_normalize_token(word)
+    if key in kk_norm and kk_norm[key] != value:
+        kk_collision = True
+    kk_norm[key] = value
+check("kk normalization no collisions", not kk_collision)
+
+pairs = find_amount_pairs("сомасы 500 000 (бес жүз мың) теңге")
+check("kk amount pair ok", len(pairs) == 1 and pairs[0].ok
+      and pairs[0].digits == 500000 and pairs[0].words == 500000,
+      repr(pairs))
+pairs = find_amount_pairs("сомасы 500 000 (алты жүз мың) теңге")
+check("kk amount pair mismatch", len(pairs) == 1 and not pairs[0].ok
+      and pairs[0].words == 600000, repr(pairs))
+amts = find_amounts("сомасы 500 000 теңге")
+check("find_amounts kk currency", amts == [500000], repr(amts))
+
 # --- даты ------------------------------------------------------------------
 
 hits = find_dates("от 12.01.2026 подписано")
@@ -285,6 +323,11 @@ if ambiguous_case:
 w = validate_text("капитал 500 000 (шестьсот тысяч) тенге")
 check("validate_text amount_mismatch",
       any(t == "amount_mismatch" for t, _ in w), repr(w))
+w = validate_text("сомасы 500 000 (алты жүз мың) теңге")
+check("validate_text kk amount_mismatch",
+      any(t == "amount_mismatch" for t, _ in w), repr(w))
+w = validate_text("сомасы 500 000 (бес жүз мың) теңге")
+check("validate_text kk clean", w == [], repr(w))
 w = validate_text("дата 31.02.2026 неверна")
 check("validate_text date_invalid",
       any(t == "date_invalid" for t, _ in w), repr(w))

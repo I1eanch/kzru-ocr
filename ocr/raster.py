@@ -17,8 +17,9 @@ import re
 from dataclasses import dataclass
 
 import cv2
-import pymupdf as fitz
 import numpy as np
+
+from .pdf_backend import PageInfo, PdfDocument, open_document
 
 BASE_DPI = 300
 TARGET_XHEIGHT_PX = 30
@@ -49,11 +50,7 @@ class TextLayer:
     reason: str
 
 
-def _page_text(page: fitz.Page) -> str:
-    return page.get_text("text") or ""
-
-
-def assess_text_layer(page: fitz.Page) -> TextLayer:
+def assess_text_layer(doc: PdfDocument, index: int) -> TextLayer:
     """Пригоден ли текстовый слой страницы.
 
     Отвергаем в четырёх случаях: слоя нет; текста подозрительно мало для
@@ -61,39 +58,33 @@ def assess_text_layer(page: fitz.Page) -> TextLayer:
     документ русско-казахский; слой похож на мусорный OCR (много однобуквенных
     токенов и мало алфавитных символов).
     """
-    text = _page_text(page)
+    text = doc.page_text(index)
     stripped = text.strip()
-    idx = page.number or 0
 
     if len(stripped) < 40:
-        return TextLayer(idx, text, False, "слой пуст или почти пуст")
+        return TextLayer(index, text, False, "слой пуст или почти пуст")
 
     words = _WORD_RE.findall(stripped)
     alpha = sum(ch.isalpha() for ch in stripped)
     alpha_ratio = alpha / len(stripped)
 
     if not _CYRILLIC_RE.search(stripped):
-        return TextLayer(idx, text, False, "в слое нет кириллицы")
+        return TextLayer(index, text, False, "в слое нет кириллицы")
 
     if alpha_ratio < 0.45:
-        return TextLayer(idx, text, False, f"мало алфавитных символов: {alpha_ratio:.2f}")
+        return TextLayer(index, text, False, f"мало алфавитных символов: {alpha_ratio:.2f}")
 
     single = sum(1 for w in words if len(w) == 1)
     if words and single / len(words) > 0.35:
-        return TextLayer(idx, text, False, "много однобуквенных токенов — похоже на мусорный OCR-слой")
+        return TextLayer(index, text, False, "много однобуквенных токенов — похоже на мусорный OCR-слой")
 
     # Страница, полностью закрытая изображением, при коротком тексте —
     # типичный «скан с подписью-водяным знаком».
-    area = abs(page.rect.width * page.rect.height)
-    if area > 0:
-        covered = 0.0
-        for img in page.get_images(full=True):
-            for rect in page.get_image_rects(img[0]):
-                covered = max(covered, abs(rect.width * rect.height) / area)
-        if covered > 0.7 and len(stripped) < 400:
-            return TextLayer(idx, text, False, f"страница закрыта изображением на {covered:.0%} при коротком тексте")
+    covered = doc.image_coverage(index)
+    if covered > 0.7 and len(stripped) < 400:
+        return TextLayer(index, text, False, f"страница закрыта изображением на {covered:.0%} при коротком тексте")
 
-    return TextLayer(idx, text, True, "ok")
+    return TextLayer(index, text, True, "ok")
 
 
 def estimate_xheight(gray: np.ndarray) -> float:
@@ -123,25 +114,26 @@ def estimate_xheight(gray: np.ndarray) -> float:
     return float(np.median(heights))
 
 
-def _cap_zoom(page: fitz.Page, zoom: float) -> float:
-    pixels = (page.rect.width * zoom) * (page.rect.height * zoom)
-    if pixels <= MAX_PAGE_PIXELS:
-        return zoom
-    return zoom * math.sqrt(MAX_PAGE_PIXELS / pixels)
+def _capped_dpi(info: PageInfo, dpi: int) -> int:
+    """Снижает DPI, если страница дала бы слишком большой растр."""
+    pixels = (info.width_pt / 72.0 * dpi) * (info.height_pt / 72.0 * dpi)
+    if pixels <= MAX_PAGE_PIXELS or pixels <= 0:
+        return dpi
+    return max(72, int(dpi * math.sqrt(MAX_PAGE_PIXELS / pixels)))
 
 
-def rasterize_page(page: fitz.Page, base_dpi: int = BASE_DPI, adaptive: bool = True) -> RasterPage:
-    zoom = _cap_zoom(page, base_dpi / 72.0)
-    pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), colorspace=fitz.csGRAY, alpha=False)
-    gray = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width).copy()
-    effective_dpi = int(round(zoom * 72.0))
+def rasterize_page(
+    doc: PdfDocument, index: int, base_dpi: int = BASE_DPI, adaptive: bool = True
+) -> RasterPage:
+    info = doc.page_info(index)
+    dpi = _capped_dpi(info, base_dpi)
+    gray = doc.rasterize(index, dpi)
     scale = 1.0
 
     if adaptive:
         xh = estimate_xheight(gray)
         if xh and not (MIN_XHEIGHT_PX <= xh <= MAX_XHEIGHT_PX):
-            scale = TARGET_XHEIGHT_PX / xh
-            scale = max(0.4, min(3.0, scale))
+            scale = max(0.4, min(3.0, TARGET_XHEIGHT_PX / xh))
             new_w, new_h = int(gray.shape[1] * scale), int(gray.shape[0] * scale)
             if new_w * new_h <= MAX_PAGE_PIXELS and new_w > 0 and new_h > 0:
                 interp = cv2.INTER_LANCZOS4 if scale > 1.0 else cv2.INTER_AREA
@@ -149,8 +141,8 @@ def rasterize_page(page: fitz.Page, base_dpi: int = BASE_DPI, adaptive: bool = T
             else:
                 scale = 1.0
 
-    return RasterPage(index=page.number or 0, image=gray, dpi=effective_dpi, scale=scale)
+    return RasterPage(index=index, image=gray, dpi=dpi, scale=scale)
 
 
-def open_pdf(path: str) -> fitz.Document:
-    return fitz.open(path)
+def open_pdf(path: str, backend: str | None = None) -> PdfDocument:
+    return open_document(path, backend)

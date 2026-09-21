@@ -234,6 +234,7 @@ def process_pdf(
     workers: int | None = None,
     max_pages: int = MAX_PAGES,
     use_text_layer: bool = True,
+    pdf_backend: str | None = None,
 ) -> Document:
     if profile not in PIPELINE_PROFILES:
         raise ValueError(f"неизвестный профиль: {profile}")
@@ -246,20 +247,21 @@ def process_pdf(
     pipeline_profile = PIPELINE_PROFILES[profile]
     doc = Document(profile=profile)
 
-    pdf = raster.open_pdf(path)
+    pdf = raster.open_pdf(path, backend=pdf_backend)
     try:
         if pdf.page_count > max_pages:
             raise ValueError(f"страниц больше лимита: {pdf.page_count} > {max_pages}")
 
         jobs: list[PageJob] = []
-        for page in pdf:
-            layer = raster.assess_text_layer(page) if use_text_layer else None
+        for index in range(pdf.page_count):
+            layer = raster.assess_text_layer(pdf, index) if use_text_layer else None
             if layer is not None and layer.usable:
+                info = pdf.page_info(index)
                 doc.pages.append(
                     Page(
-                        index=layer.index,
-                        width=int(page.rect.width),
-                        height=int(page.rect.height),
+                        index=index,
+                        width=int(info.width_pt),
+                        height=int(info.height_pt),
                         source="text_layer",
                         raw_text=layer.text,
                         engine="text_layer",
@@ -268,9 +270,11 @@ def process_pdf(
                 continue
 
             if layer is not None:
-                doc.warn("text_layer_rejected", layer.index, layer.reason)
+                doc.warn("text_layer_rejected", index, layer.reason)
 
-            rp = raster.rasterize_page(page, base_dpi=pipeline_profile.base_dpi, adaptive=pipeline_profile.adaptive_dpi)
+            rp = raster.rasterize_page(
+                pdf, index, base_dpi=pipeline_profile.base_dpi, adaptive=pipeline_profile.adaptive_dpi
+            )
             jobs.append(PageJob(index=rp.index, image=rp.image, dpi=rp.dpi, profile=pipeline_profile))
     finally:
         pdf.close()

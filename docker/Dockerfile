@@ -22,11 +22,15 @@ ENV PYTHONUNBUFFERED=1 \
 
 # tesseract-ocr-{rus,kaz,osd} из Debian — это tessdata_fast-класс модели,
 # они остаются доступны для профиля fast. tessdata_best докачиваем ниже.
+# poppler-utils (pdftoppm/pdftotext/pdfinfo/pdfimages) — растеризатор из
+# разрешённого ТЗ стека и дефолтный бэкенд: внешние GPL-2 утилиты вместо
+# линковки с AGPL-библиотекой.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         tesseract-ocr \
         tesseract-ocr-rus \
         tesseract-ocr-kaz \
         tesseract-ocr-osd \
+        poppler-utils \
         libglib2.0-0 \
         fonts-dejavu-core \
         curl \

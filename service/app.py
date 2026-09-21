@@ -25,8 +25,8 @@ from typing import Any, Literal
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse
 
+from ocr.pdf_backend import DEFAULT_BACKEND, available_backends
 from ocr.pipeline import MAX_BYTES, MAX_PAGES, PIPELINE_PROFILES, process_pdf
-from ocr.render import PROFILES, render_document
 
 app = FastAPI(title="kzru-ocr", version="0.1.0")
 
@@ -110,6 +110,8 @@ def healthz() -> dict[str, Any]:
         "tesseract": version,
         "langs": langs,
         "paddle": paddle,
+        "pdf_backends": available_backends(),
+        "pdf_backend_default": DEFAULT_BACKEND,
         "profiles": sorted(PIPELINE_PROFILES),
         "render_profiles": sorted(PROFILES),
         "limits": {"max_bytes": MAX_BYTES, "max_pages": MAX_PAGES},

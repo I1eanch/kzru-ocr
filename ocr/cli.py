@@ -45,6 +45,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--no-text-layer", action="store_true", help="игнорировать текстовый слой, всё через OCR"
     )
+    parser.add_argument(
+        "--pdf-backend",
+        choices=["poppler", "pymupdf"],
+        default=None,
+        help="растеризатор: poppler (по умолчанию, GPL-2 утилиты) или pymupdf (AGPL-3.0)",
+    )
     parser.add_argument("--json", dest="json_path", help="куда писать отчёт с warnings и полями")
     args = parser.parse_args(argv)
 
@@ -83,6 +89,7 @@ def main(argv: list[str] | None = None) -> int:
                 render=args.render,
                 workers=args.workers,
                 use_text_layer=not args.no_text_layer,
+                pdf_backend=args.pdf_backend,
             )
         except Exception as exc:
             failed += 1

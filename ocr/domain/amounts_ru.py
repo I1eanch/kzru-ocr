@@ -10,6 +10,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from .amounts_kk import words_to_number as _words_to_number_kk
+
 _UNITS = {
     "ноль": 0,
     "один": 1, "одна": 1, "одно": 1, "одни": 1,
@@ -124,11 +126,17 @@ class AmountCheck:
 
 
 def find_amount_pairs(text: str) -> list[AmountCheck]:
-    """Найти шаблоны «число (пропись)» и сверить цифры с прописью."""
+    """Найти шаблоны «число (пропись)» и сверить цифры с прописью.
+
+    Пропись распознаётся на русском или казахском: сначала русский
+    парсер, при ``None`` — казахский.
+    """
     out: list[AmountCheck] = []
     for m in _PAIR_RE.finditer(text):
         digits = parse_digits(m.group("digits")) or 0
         words = words_to_number(m.group("words"))
+        if words is None:
+            words = _words_to_number_kk(m.group("words"))
         out.append(AmountCheck(
             digits=digits,
             words=words,
