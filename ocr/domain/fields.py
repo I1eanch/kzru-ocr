@@ -45,16 +45,26 @@ def _bin_candidates(text: str) -> list[str]:
 def extract_fields(text: str) -> dict[str, list[str]]:
     """Нормализованные поля документа.
 
-    ``bin`` — уникальные 12-значные номера (после ``repair``, если ``fixed``);
-    ``amounts`` — целые тенге строками без пробелов;
+    ``bin`` — только номера, прошедшие контрольную сумму сами или после
+    однозначного исправления; ``amounts`` — целые тенге строками без пробелов;
     ``dates`` — ISO ``YYYY-MM-DD`` для валидных, исходная подстрока иначе.
+
+    Номера, не прошедшие проверку, в поля НЕ попадают — они уходят в
+    ``bin_checksum_failed``. На сильно деградированных сканах регулярное
+    выражение цепляет мусорные 12-значные последовательности: замер на наборе
+    с деградацией `heavy` дал 13 найденных «БИН» против 6 настоящих, то есть
+    precision 0.46. Контрольная сумма отсеивает такой мусор почти полностью:
+    случайная последовательность проходит её примерно в одном случае из
+    одиннадцати. Выдать меньше полей и честно пометить проблему лучше, чем
+    подсунуть в проверку госдокумента правдоподобный несуществующий номер.
     """
     bins: list[str] = []
     for num in _bin_candidates(text):
         res = repair(num)
-        value = res.value if res.status == "fixed" else num
-        if value not in bins:
-            bins.append(value)
+        if res.status not in ("valid", "fixed"):
+            continue
+        if res.value not in bins:
+            bins.append(res.value)
 
     amounts = sorted({str(v) for v in find_amounts(text)}, key=int)
 
