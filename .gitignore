@@ -4,12 +4,18 @@ __pycache__/
 venv/
 *.egg-info/
 
-# артефакты прогонов и данные
+# артефакты прогонов и генерируемые данные: всё воспроизводится
+# bench/make_sample_docs.py и bench/make_pseudoscan.py с тем же --seed
 out/
 bench/pred/
+bench/pred_*/
 bench/work/
-bench/data/*.pdf
-!bench/data/.gitkeep
+bench/scans/
+bench/gt/
+bench/data/
+bench/report*.csv
+bench/report*.json
+bench/grid_*.json
 *.traineddata
 train/data/
 train/synth/
