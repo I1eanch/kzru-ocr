@@ -48,6 +48,8 @@ class PipelineProfile:
     digit_pass: bool = True
     base_dpi: int = raster.BASE_DPI
     adaptive_dpi: bool = True
+    paddle_limit: int = 2000
+    """`text_det_limit_side_len` детектора PP-OCR. Дефолтные 960 ужимают A4."""
 
 
 PIPELINE_PROFILES: dict[str, PipelineProfile] = {
@@ -69,7 +71,7 @@ _ENGINES: dict[tuple, object] = {}
 
 def _engine(kind: str, profile: PipelineProfile):
     """Кэш движка в пределах процесса: загрузка модели стоит секунды."""
-    key = (kind, profile.tessdata, profile.psm)
+    key = (kind, profile.tessdata, profile.psm, profile.paddle_limit)
     cached = _ENGINES.get(key)
     if cached is not None:
         return cached
@@ -81,7 +83,7 @@ def _engine(kind: str, profile: PipelineProfile):
     elif kind == "paddle":
         from .engines.paddle import PaddleEngine
 
-        engine = PaddleEngine()
+        engine = PaddleEngine(limit_side_len=profile.paddle_limit)
     else:
         raise ValueError(f"неизвестный движок: {kind}")
 
