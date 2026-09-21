@@ -50,9 +50,17 @@ docker run --rm kzru-ocr:dev sh -c 'tesseract --version; tesseract --list-langs'
 docker build --platform linux/amd64 --target full -t kzru-ocr:full -f docker/Dockerfile .
 ```
 
+Проверка доменного слоя (контрольная сумма БИН/ИИН, числительные, даты,
+гомоглифы) — 62 кейса, включая известное слепое пятно 11-й позиции:
+
+```bash
+docker run --rm kzru-ocr:dev python tests_domain.py
+```
+
 ## Запуск
 
-CLI:
+CLI (образ самодостаточен; монтирование нужно лишь чтобы отдать ему свои PDF
+и забрать результат):
 
 ```bash
 docker run --rm -v "$PWD":/app -w /app -e PYTHONPATH=/app kzru-ocr:dev \

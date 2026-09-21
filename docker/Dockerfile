@@ -46,6 +46,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY ocr ./ocr
 COPY service ./service
 COPY bench ./bench
+COPY tests_domain.py ./
 
 ENV TESSDATA_PREFIX=/opt/tessdata_best
 EXPOSE 8099
