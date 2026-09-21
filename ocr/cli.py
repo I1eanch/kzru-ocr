@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from .pipeline import PIPELINE_PROFILES, process_pdf
@@ -37,7 +37,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--profile", default="balanced", choices=sorted(PIPELINE_PROFILES))
     parser.add_argument("--render", default="default", choices=sorted(PROFILES))
     parser.add_argument("--workers", type=int, default=None, help="процессов на страницы")
-    parser.add_argument("--no-text-layer", action="store_true", help="игнорировать текстовый слой, всё через OCR")
+    parser.add_argument(
+        "--engine",
+        choices=["tesseract", "paddle"],
+        help="переопределить движок профиля (paddle требует образ full)",
+    )
     parser.add_argument("--json", dest="json_path", help="куда писать отчёт с warnings и полями")
     args = parser.parse_args(argv)
 
@@ -56,6 +60,15 @@ def main(argv: list[str] | None = None) -> int:
     if out_dir:
         out_dir.mkdir(parents=True, exist_ok=True)
 
+    profile_name = args.profile
+    if args.engine:
+        # Переопределение движка регистрируется отдельным профилем, а не
+        # правкой существующего: базовые профили должны оставаться теми, для
+        # которых опубликованы замеры bake-off.
+        base = PIPELINE_PROFILES[args.profile]
+        profile_name = f"{args.profile}+{args.engine}"
+        PIPELINE_PROFILES[profile_name] = replace(base, name=profile_name, engines=(args.engine,))
+
     reports: list[dict] = []
     failed = 0
 
@@ -63,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             doc = process_pdf(
                 str(path),
-                profile=args.profile,
+                profile=profile_name,
                 render=args.render,
                 workers=args.workers,
                 use_text_layer=not args.no_text_layer,

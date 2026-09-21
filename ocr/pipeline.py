@@ -4,13 +4,16 @@
 допустимые секунды на документ, попадание в него обеспечивается выбором
 профиля, а не переписыванием пайплайна.
 
-    fast      один движок, tessdata_fast, без OSD и без бинаризации Sauvola
-    balanced  один движок, tessdata_best, OSD + deskew + Sauvola
-    accurate  два движка с арбитражем + доуточняющий проход по цифрам
+    fast      tessdata_fast, 250 DPI, без OSD/deskew/бинаризации
+    balanced  tessdata_fast, 300 DPI, OSD + deskew + Sauvola + проход по цифрам
+    accurate  то же при 400 DPI и psm 4 — минимальная ошибка в цифрах
 
-Параллелизм — по страницам через процессы: и Tesseract, и PaddleOCR внутри
-себя масштабируются плохо, поэтому в воркере OMP_NUM_THREADS=1, а выигрыш
-берётся числом процессов.
+PaddleOCR доступен как `--engine paddle`, но в дефолтные профили не входит:
+bake-off показал ошибку на цифрах в 6-11 раз выше при сопоставимом CER.
+
+Параллелизм — по страницам через процессы, воркеры запускаются через spawn и
+переводятся в однопоточный режим (`OMP_THREAD_LIMIT=1`): Tesseract иначе
+берёт около 3.3 потоков на страницу и несколько воркеров дерутся за ядра.
 """
 
 from __future__ import annotations
@@ -54,18 +57,45 @@ class PipelineProfile:
     """`text_det_limit_side_len` детектора PP-OCR. Дефолтные 960 ужимают A4."""
 
 
+# Состав профилей выбран по bake-off на 8 документах (13 страниц), а не по
+# ожиданиям. Ключевые результаты, render=cells:
+#
+#   tess-fast-psm6-300dpi   CER 0.0366  digit 0.0125  2.46 с/стр  ← лучший CER
+#   tess-fast-psm4-400dpi   CER 0.0386  digit 0.0121  3.46 с/стр  ← лучшие цифры
+#   tess-best-psm6-300dpi   CER 0.0391  digit 0.0151  2.71 с/стр
+#   paddle-kk-side1280      CER 0.0389  digit 0.0788  3.35 с/стр
+#   ensemble-tess+paddle    CER 0.0505  digit 0.0169  7.39 с/стр
+#
+# Два вывода против интуиции. Первый: tessdata_fast обошёл tessdata_best во
+# всех четырёх парах psm×DPI и при этом быстрее. Второй: PaddleOCR даёт
+# сопоставимый общий CER, но ошибается на цифрах в 6-11 раз чаще, а ансамбль
+# с ним ухудшает CER относительно каждого движка по отдельности. Для задачи,
+# где ошибка в цифре недопустима, Paddle в дефолтный путь не входит.
 PIPELINE_PROFILES: dict[str, PipelineProfile] = {
     "fast": PipelineProfile(
         name="fast",
         tessdata="fast",
+        psm=6,
         orientation=False,
         deskew=False,
         denoise=False,
         digit_pass=False,
         base_dpi=250,
     ),
-    "balanced": PipelineProfile(name="balanced"),
-    "accurate": PipelineProfile(name="accurate", engines=("tesseract", "paddle")),
+    "balanced": PipelineProfile(
+        name="balanced",
+        tessdata="fast",
+        psm=6,
+        base_dpi=300,
+    ),
+    # Точный профиль оптимизирован по цифрам, а не по общему CER: критерий
+    # приёмки требует безошибочных БИН, сумм и дат.
+    "accurate": PipelineProfile(
+        name="accurate",
+        tessdata="fast",
+        psm=4,
+        base_dpi=400,
+    ),
 }
 
 _ENGINES: dict[tuple, object] = {}
