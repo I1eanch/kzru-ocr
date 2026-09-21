@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import multiprocessing as mp
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor
@@ -97,7 +98,10 @@ class PageJob:
     index: int
     image: np.ndarray
     dpi: int
-    profile_name: str
+    profile: PipelineProfile
+    """Сам профиль, а не имя: при старте воркеров через spawn глобальный
+    реестр PIPELINE_PROFILES в дочернем процессе пуст, и кастомные профили
+    bake-off по имени не нашлись бы."""
 
 
 @dataclass(slots=True)
@@ -115,7 +119,7 @@ def _recognize_page(job: PageJob) -> PageResult:
     # растёт вместо падения.
     cv2.setNumThreads(1)
 
-    profile = PIPELINE_PROFILES[job.profile_name]
+    profile = job.profile
     try:
         primary_kind = profile.engines[0]
         engine = _engine(primary_kind, profile)
@@ -237,7 +241,7 @@ def process_pdf(
                 doc.warn("text_layer_rejected", layer.index, layer.reason)
 
             rp = raster.rasterize_page(page, base_dpi=pipeline_profile.base_dpi, adaptive=pipeline_profile.adaptive_dpi)
-            jobs.append(PageJob(index=rp.index, image=rp.image, dpi=rp.dpi, profile_name=profile))
+            jobs.append(PageJob(index=rp.index, image=rp.image, dpi=rp.dpi, profile=pipeline_profile))
     finally:
         pdf.close()
 
@@ -310,6 +314,11 @@ def _run_jobs(jobs: list[PageJob], workers: int | None) -> list[PageResult]:
     if workers == 1:
         return [_recognize_page(job) for job in jobs]
 
+    # Контекст spawn, а не fork. Родительский процесс к этому моменту уже
+    # работал с OpenCV (растеризация, оценка масштаба), и fork копирует его
+    # пул потоков в неконсистентном состоянии — воркеры зависают вместо
+    # работы. Замерено: при fork прогон с 2 воркерами не завершался минутами,
+    # тогда как один воркер проходил за 20 с.
     os.environ.setdefault("OMP_NUM_THREADS", "1")
-    with ProcessPoolExecutor(max_workers=workers) as pool:
+    with ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("spawn")) as pool:
         return list(pool.map(_recognize_page, jobs))
