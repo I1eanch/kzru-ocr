@@ -59,8 +59,15 @@ CMD ["uvicorn", "service.app:app", "--host", "0.0.0.0", "--port", "8099", "--wor
 
 FROM runtime AS full
 
+# PaddleOCR тянет полный opencv-python (не headless), которому нужен libGL.
+# В runtime его нет сознательно: там headless-сборка и лишние 200 МБ не нужны.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgl1 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements-paddle.txt .
 RUN pip install --no-cache-dir -r requirements-paddle.txt
 
-# Прогрев: скачиваем det+rec модели в образ, чтобы первый запрос не ждал сети.
-RUN python -c "from paddleocr import PaddleOCR; PaddleOCR(lang='kk', use_doc_orientation_classify=False, use_doc_unwarping=False, use_textline_orientation=False)" || true
+# Прогрев: модели det+rec скачиваются в образ, чтобы первый запрос не ждал
+# сети. Офлайн-требование распространяется и на первый вызов.
+RUN python -c "from paddleocr import PaddleOCR; PaddleOCR(lang='kk', use_doc_orientation_classify=False, use_doc_unwarping=False, use_textline_orientation=False)"
