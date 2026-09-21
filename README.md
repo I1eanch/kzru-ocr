@@ -339,23 +339,40 @@ Field-accuracy на VPS для профилей `balanced` и `accurate` — 1.0
 
 ## Дообучение (опционально)
 
-Дообучение Tesseract LSTM идёт на CPU и не требует человеческого времени,
-кроме запуска: генерация синтетики — минуты, обучение — часы в фоне.
+Дообучение Tesseract LSTM идёт на CPU и почти не требует человеческого
+времени: генерация синтетики — минуты, подготовка и обучение — часы в фоне.
 
 ```bash
 docker build -f docker/Dockerfile.train -t kzru-ocr:train .
+
 docker run --rm -v "$PWD":/work -w /work kzru-ocr:train \
-  python train/make_synth.py --out train/synth --count 30000 --seed 42
+  python train/make_synth.py --out train/synth --count 8000 --seed 42
+
 docker run --rm -v "$PWD":/work -w /work kzru-ocr:train \
-  make -C /opt/tesstrain training MODEL_NAME=kzru_doc START_MODEL=kaz \
+  make -C /opt/tesstrain training -j"$(nproc)" \
+    MODEL_NAME=kzru_doc START_MODEL=kaz \
     TESSDATA=/opt/tessdata_best DATA_DIR=/work/train/data \
-    GROUND_TRUTH_DIR=/work/train/synth EPOCHS=30 \
+    GROUND_TRUTH_DIR=/work/train/synth \
+    MAX_ITERATIONS=10000 RATIO_TRAIN=0.95 \
     WORDLIST_FILE=/work/ocr/data/kzru.user-words
 ```
 
+Два места, на которых это ломается, и оба молча:
+
+- **`-j` обязателен.** Подготовка строит `.box` и `.lstmf` по одной строке
+  на процесс: замерено около 40 строк в минуту в один поток, то есть 30 000
+  строк — примерно 12 часов только на подготовку. Поэтому в примере 8000
+  строк и параллельный `make`.
+- **`configs/lstm.train` должен лежать рядом с моделями.** Без него
+  `tesseract` печатает `read_params_file: Can't open lstm.train` и не создаёт
+  ни одного `.lstmf` — при этом `make` продолжает работать как ни в чём не
+  бывало. В `docker/Dockerfile.train` каталог копируется в
+  `/opt/tessdata_best/configs` именно поэтому.
+
 Полученный `kzru_doc.traineddata` подключается копированием в
 `/opt/tessdata_best` и заменой `lang` в `ocr/engines/tesseract.py`. Принимать
-его следует **только по результатам замера** на dev-наборе.
+его следует **только по результатам замера** на dev-наборе: `bench/bakeoff.py`
+сравнит его со stock-моделью на тех же документах.
 
 ## Известные ограничения
 

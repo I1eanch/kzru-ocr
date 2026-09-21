@@ -56,12 +56,17 @@ COPY --from=build /usr/local/lib/ /usr/local/lib/
 COPY --from=build /usr/local/share/tessdata/ /usr/local/share/tessdata/
 RUN ldconfig
 
+# configs/ копируется рядом с моделями: tesstrain строит .lstmf вызовом
+# `tesseract ... lstm.train`, и без этого конфига tesseract пишет
+# "Can't open lstm.train" и молча не создаёт обучающие файлы.
 ARG TESSDATA_BEST_REF=4.1.0
 RUN mkdir -p /opt/tessdata_best \
     && for lang in rus kaz osd eng; do \
          curl -fsSL -o "/opt/tessdata_best/$lang.traineddata" \
            "https://github.com/tesseract-ocr/tessdata_best/raw/${TESSDATA_BEST_REF}/${lang}.traineddata"; \
-       done
+       done \
+    && cp -r /usr/local/share/tessdata/configs /opt/tessdata_best/configs \
+    && ls /opt/tessdata_best/configs/lstm.train
 
 RUN git clone --depth 1 https://github.com/tesseract-ocr/tesstrain.git /opt/tesstrain \
     && pip install --no-cache-dir -r /opt/tesstrain/requirements.txt
