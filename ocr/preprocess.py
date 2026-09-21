@@ -38,29 +38,62 @@ class Prepared:
     skew: float
 
 
-def sauvola(gray: np.ndarray, window: int = SAUVOLA_WINDOW, k: float = SAUVOLA_K) -> np.ndarray:
-    """Локальная бинаризация. Возвращает uint8 {0,255}, текст чёрный."""
+def sauvola(gray: np.ndarray, window: int = SAUVOLA_WINDOW, k: float = SAUVOLA_K, band: int = 512) -> np.ndarray:
+    """Локальная бинаризация. Возвращает uint8 {0,255}, текст чёрный.
+
+    Реализация на срезах интегрального изображения и полосами по строкам.
+    Прямолинейный вариант через `np.mgrid` + fancy-indexing выделял на A4/300
+    DPI около гигабайта временных массивов на страницу: при нескольких
+    процессах это давало не конкуренцию за CPU, а давление на память, и время
+    росло суперлинейно (замерено: 62 с → 198 с → 554 с при 1/2/3 воркерах).
+    Срезы дают views вместо копий, полосы ограничивают пик памяти.
+    """
     if window % 2 == 0:
         window += 1
-    img = gray.astype(np.float64)
     pad = window // 2
-    padded = cv2.copyMakeBorder(img, pad, pad, pad, pad, cv2.BORDER_REFLECT)
-    integral, integral_sq = cv2.integral2(padded)
-
     h, w = gray.shape
-    ys, xs = np.mgrid[0:h, 0:w]
-    y0, x0 = ys, xs
-    y1, x1 = ys + window, xs + window
     area = float(window * window)
 
-    total = integral[y1, x1] - integral[y0, x1] - integral[y1, x0] + integral[y0, x0]
-    total_sq = integral_sq[y1, x1] - integral_sq[y0, x1] - integral_sq[y1, x0] + integral_sq[y0, x0]
+    padded = cv2.copyMakeBorder(gray, pad, pad, pad, pad, cv2.BORDER_REFLECT)
+    out = np.empty((h, w), dtype=np.uint8)
 
-    mean = total / area
-    var = np.maximum(total_sq / area - mean * mean, 0.0)
-    std = np.sqrt(var)
-    threshold = mean * (1.0 + k * (std / SAUVOLA_R - 1.0))
-    return np.where(img > threshold, 255, 0).astype(np.uint8)
+    for y0 in range(0, h, band):
+        y1 = min(h, y0 + band)
+        rows = y1 - y0
+        sub = padded[y0 : y1 + 2 * pad]
+        # sdepth обязателен: по умолчанию cv2.integral2 отдаёт сумму как
+        # int32, что и ломает inplace-арифметику, и переполняется на полной
+        # странице (2480*3508*255 > 2^31).
+        integral, integral_sq = cv2.integral2(sub, sdepth=cv2.CV_64F, sqdepth=cv2.CV_64F)
+
+        total = (
+            integral[window : window + rows, window : window + w]
+            - integral[0:rows, window : window + w]
+            - integral[window : window + rows, 0:w]
+            + integral[0:rows, 0:w]
+        )
+        total_sq = (
+            integral_sq[window : window + rows, window : window + w]
+            - integral_sq[0:rows, window : window + w]
+            - integral_sq[window : window + rows, 0:w]
+            + integral_sq[0:rows, 0:w]
+        )
+
+        total /= area          # mean, inplace
+        total_sq /= area
+        total_sq -= total * total
+        np.maximum(total_sq, 0.0, out=total_sq)
+        np.sqrt(total_sq, out=total_sq)          # std
+
+        total_sq /= SAUVOLA_R
+        total_sq -= 1.0
+        total_sq *= k
+        total_sq += 1.0
+        total *= total_sq                        # threshold
+
+        out[y0:y1] = np.where(gray[y0:y1] > total, 255, 0)
+
+    return out
 
 
 def _projection_score(binary_inv: np.ndarray, angle: float) -> float:

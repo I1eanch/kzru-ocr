@@ -21,6 +21,7 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from . import raster
@@ -108,6 +109,12 @@ class PageResult:
 
 
 def _recognize_page(job: PageJob) -> PageResult:
+    # OpenCV держит собственный пул потоков, который OMP_NUM_THREADS не
+    # контролирует. Без этого каждый воркер поднимает пул на все ядра, и N
+    # воркеров дают N×ядер потоков: машина уходит в переподписку, а время
+    # растёт вместо падения.
+    cv2.setNumThreads(1)
+
     profile = PIPELINE_PROFILES[job.profile_name]
     try:
         primary_kind = profile.engines[0]
