@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import os
+import tempfile
 import time
 from pathlib import Path
 
@@ -38,11 +39,20 @@ def _open_fds() -> int:
         return 0
 
 
-def _pdf_bytes(name: str = "sample") -> bytes:
-    """Минимальный валидный PDF без текстового слоя."""
-    path = f"bench/scans/doc_001_dogovor.pdf"
-    with open(path, "rb") as fh:
-        return fh.read()
+FIXTURES = Path(__file__).resolve().parent / "tests" / "fixtures"
+ONE_PAGE = FIXTURES / "one_page.pdf"
+THREE_PAGES = FIXTURES / "three_pages.pdf"
+
+
+def _pdf_bytes() -> bytes:
+    """Односторонний тестовый скан — отслеживаемый файл, не локальный артефакт.
+
+    Раньше тесты читали `bench/scans/`, который в `.gitignore`: в свежем
+    клоне их нечем было запустить, а «тесты проходят» доказывалось локальными
+    артефактами. Фикстуры лежат в репозитории и пересоздаются скриптом
+    `tests/fixtures/make_fixtures.py`.
+    """
+    return ONE_PAGE.read_bytes()
 
 
 # --------------------------------------------------------------------------
@@ -201,9 +211,14 @@ def test_readiness_checks_the_directory_the_engine_uses(client: TestClient, monk
     monkeypatch.setattr(app_module, "_tessdata_dir", lambda profile: str(empty))
 
     response = client.get("/readyz")
+    payload = response.json()
+
+    # Проверяется наблюдаемый контракт, а не формулировка сообщения: сервис
+    # не готов, профиль не рекламируется и назван нерабочим с причиной.
     assert response.status_code == 503
-    problems = response.json()["problems"]
-    assert any("нет файлов моделей" in p for p in problems), problems
+    assert payload["problems"], "отказ без указания причин"
+    assert "balanced" not in payload["profiles"], payload["profiles"]
+    assert payload["profiles_unavailable"].get("balanced"), payload["profiles_unavailable"]
 
 
 def test_readiness_reports_engine_directory(client: TestClient) -> None:
@@ -342,8 +357,7 @@ def test_partial_page_failure_surfaces_as_warning(client: TestClient, monkeypatc
     # обрабатываться на месте: при размере пула 1 `_run_jobs` идёт inline.
     monkeypatch.setattr(pipeline.concurrency, "shared_pool_size", lambda: 1)
     monkeypatch.setattr(pipeline, "_recognize_page", failing)
-    with open("bench/scans/doc_006_ustav.pdf", "rb") as fh:
-        multipage = fh.read()
+    multipage = THREE_PAGES.read_bytes()
 
     response = client.post(
         "/ocr",
@@ -374,3 +388,356 @@ def test_all_pages_failed_is_service_error_not_empty_success(client: TestClient,
     response = client.post("/ocr", files={"file": ("x.pdf", io.BytesIO(_pdf_bytes()), "application/pdf")})
     assert response.status_code == 503, response.json()
     assert "распознавание недоступно" in response.json()["detail"]
+
+
+# --------------------------------------------------------------------------
+# Приём заданий под конкуренцией
+# --------------------------------------------------------------------------
+
+
+def test_concurrent_admission_respects_queue_limit(client: TestClient, monkeypatch) -> None:
+    """Лимит очереди держится при одновременных запросах, а не только по очереди.
+
+    Прежняя версия проверяла вместимость под замком, отпускала его на приём
+    файла и вставляла запись потом. Параллельные запросы проходили проверку
+    одновременно, пока ни один ещё не занял место: при лимите 2 все шесть
+    запросов получали 202, и в очереди оказывалось шесть заданий.
+
+    Синхронизация устроена так, чтобы тест завершался детерминированно.
+    Барьер стоит ПЕРЕД запросом и разводит старт всех потоков: ждать все
+    шесть внутри приёма файла нельзя — после исправления туда доходят только
+    допущенные запросы, и барьер не собрался бы никогда. Само окно гонки
+    удерживается открытым короткой задержкой в приёме файла.
+    """
+    import threading
+
+    limit = 2
+    requests = 6
+    monkeypatch.setattr(app_module, "MAX_QUEUED_JOBS", limit)
+
+    start = threading.Barrier(requests, timeout=30)
+    original_save = app_module._save_upload
+
+    def slow_save(upload):
+        # Окно между проверкой вместимости и вставкой записи: на старом коде
+        # за это время сюда успевали войти все шесть запросов.
+        time.sleep(0.2)
+        return original_save(upload)
+
+    monkeypatch.setattr(app_module, "_save_upload", slow_save)
+    # Работу не запускаем: проверяется приём, а не обработка.
+    monkeypatch.setattr(app_module._executor, "submit", lambda fn: None)
+
+    codes: list[int] = []
+    codes_lock = threading.Lock()
+    payload = _pdf_bytes()
+
+    def post() -> None:
+        start.wait()
+        response = client.post(
+            "/jobs", files={"file": ("x.pdf", io.BytesIO(payload), "application/pdf")}
+        )
+        with codes_lock:
+            codes.append(response.status_code)
+
+    threads = [threading.Thread(target=post) for _ in range(requests)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+        assert not t.is_alive(), "запрос не завершился"
+
+    accepted = sum(1 for c in codes if c == 202)
+    assert accepted == limit, f"принято {accepted} при лимите {limit}: {codes}"
+    assert sum(1 for c in codes if c == 429) == requests - limit, codes
+    assert len(app_module._jobs) == limit, f"в очереди {len(app_module._jobs)} заданий"
+
+    # Задачи не запускались, поэтому временные файлы убираем сами.
+    for job in app_module._jobs.values():
+        upload = job.get("_upload")
+        if upload:
+            Path(upload).unlink(missing_ok=True)
+
+
+def test_failed_submit_releases_reserved_slot(client: TestClient, monkeypatch) -> None:
+    """Падение постановки в пул освобождает слот и удаляет временный файл.
+
+    Иначе резервация зависает навсегда: очередь деградирует до нуля свободных
+    мест, а задание вечно числится принятым.
+    """
+    def exploding_submit(fn):
+        raise RuntimeError("пул остановлен")
+
+    monkeypatch.setattr(app_module._executor, "submit", exploding_submit)
+    before = set(Path(tempfile.gettempdir()).glob("kzru-upload-*"))
+
+    response = client.post(
+        "/jobs", files={"file": ("x.pdf", io.BytesIO(_pdf_bytes()), "application/pdf")}
+    )
+    assert response.status_code == 503, response.text
+    assert len(app_module._jobs) == 0, "зарезервированный слот не освобождён"
+    leaked = set(Path(tempfile.gettempdir()).glob("kzru-upload-*")) - before
+    assert not leaked, f"временный файл остался: {leaked}"
+
+
+# --------------------------------------------------------------------------
+# Отмена, границы запроса, контракт профилей
+# --------------------------------------------------------------------------
+
+
+def test_delete_running_job_does_not_yank_file_from_worker(client: TestClient, monkeypatch) -> None:
+    """Удаление работающего задания не вырывает входной файл из-под воркера.
+
+    Прежняя версия удаляла файл немедленно. Если задание в этот момент
+    обрабатывалось, воркер терял файл под собой и падал внутренней ошибкой.
+    Владелец временного файла — сама задача.
+    """
+    import threading
+
+    started = threading.Event()
+    seen_path: dict[str, Path] = {}
+    release = threading.Event()
+
+    original = app_module._process_in_slot
+
+    def slow_process(path, name, profile, render):
+        seen_path["path"] = Path(path)
+        started.set()
+        release.wait(timeout=30)
+        assert Path(path).exists(), "входной файл удалён во время обработки"
+        return original(path, name, profile, render)
+
+    monkeypatch.setattr(app_module, "_process_in_slot", slow_process)
+
+    response = client.post(
+        "/jobs", files={"file": ("x.pdf", io.BytesIO(_pdf_bytes()), "application/pdf")}
+    )
+    job_id = response.json()["job_id"]
+    assert started.wait(timeout=30), "задание не стартовало"
+
+    deleted = client.delete(f"/jobs/{job_id}")
+    assert deleted.status_code == 204
+    assert Path(seen_path["path"]).exists(), "файл удалён, пока воркер с ним работает"
+
+    release.set()
+    # Даём задаче завершиться и убрать файл за собой.
+    for _ in range(300):
+        if not Path(seen_path["path"]).exists():
+            break
+        time.sleep(0.1)
+    assert not Path(seen_path["path"]).exists(), "задача не убрала временный файл"
+
+
+def test_oversized_body_rejected_before_multipart_parse(client: TestClient, monkeypatch) -> None:
+    """Слишком большое тело отвергается по заголовку, не после разбора multipart.
+
+    `UploadFile` появляется только после полного разбора тела, то есть после
+    его приёма целиком. Проверка размера внутри обработчика ограничивает лишь
+    вторую копию.
+    """
+    parsed = False
+
+    original_save = app_module._save_upload
+
+    def tracking_save(upload):
+        nonlocal parsed
+        parsed = True
+        return original_save(upload)
+
+    monkeypatch.setattr(app_module, "_save_upload", tracking_save)
+
+    huge = b"%PDF-1.4\n" + b"0" * 1024
+    response = client.post(
+        "/ocr",
+        files={"file": ("big.pdf", io.BytesIO(huge), "application/pdf")},
+        headers={"content-length": str(app_module.MAX_REQUEST_BYTES + 1)},
+    )
+    assert response.status_code == 413, response.text
+    assert not parsed, "тело разбиралось несмотря на превышение объявленного размера"
+
+
+def test_advertised_profiles_actually_run(client: TestClient) -> None:
+    """Каждый профиль из `/readyz` действительно выполняет распознавание.
+
+    Прежняя проверка считала успехом любой код, кроме 400: профиль мог
+    рекламироваться и отвечать 503 или 500. Список из `/readyz` клиент читает
+    как перечень работающих режимов, поэтому он обязан это выдерживать.
+    """
+    ready = client.get("/readyz")
+    assert ready.status_code == 200, ready.text
+    advertised = ready.json()["profiles"]
+    assert advertised, "не объявлено ни одного профиля"
+
+    payload = _pdf_bytes()
+    for profile in advertised:
+        response = client.post(
+            "/ocr",
+            params={"profile": profile},
+            files={"file": ("x.pdf", io.BytesIO(payload), "application/pdf")},
+        )
+        assert response.status_code == 200, f"профиль {profile}: {response.status_code} {response.text[:200]}"
+        assert response.json()["text"].strip(), f"профиль {profile} вернул пустой текст"
+
+
+def test_unavailable_profile_is_service_error_not_client_error(client: TestClient, monkeypatch) -> None:
+    """Профиль с отсутствующими моделями даёт 503 и исчезает из рекламы.
+
+    400 здесь врал бы: запрос клиента корректен, неисправен сервис.
+    """
+    real = app_module._profile_problem
+
+    def broken(profile):
+        return "модели не найдены" if profile.name == "fast" else real(profile)
+
+    monkeypatch.setattr(app_module, "_profile_problem", broken)
+
+    response = client.post(
+        "/ocr",
+        params={"profile": "fast"},
+        files={"file": ("x.pdf", io.BytesIO(_pdf_bytes()), "application/pdf")},
+    )
+    assert response.status_code == 503, response.text
+
+    advertised = client.get("/readyz").json()["profiles"]
+    assert "fast" not in advertised, advertised
+    assert "fast" in client.get("/readyz").json()["profiles_unavailable"]
+
+
+def test_invalid_pdf_does_not_leak_filesystem_paths(client: TestClient) -> None:
+    """Нечитаемый PDF даёт 422, и сообщение не содержит путей файловой системы.
+
+    Код проверяется строго: 503 означал бы, что до разбора PDF дело не дошло,
+    и ветка `InvalidPdf` осталась бы недоказанной. Готовность профиля по
+    умолчанию — предусловие теста, а не повод ослабить проверку.
+    """
+    ready = client.get("/readyz")
+    assert ready.status_code == 200, f"профиль по умолчанию не готов: {ready.text}"
+
+    broken = b"%PDF-1.4\nnot actually a pdf\n" + b"x" * 256
+    response = client.post(
+        "/ocr", files={"file": ("x.pdf", io.BytesIO(broken), "application/pdf")}
+    )
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    assert "/tmp" not in detail and "kzru-upload" not in detail, detail
+    assert "pdfinfo" not in detail.lower(), detail
+
+
+# --------------------------------------------------------------------------
+# Живучесть пула воркеров
+# --------------------------------------------------------------------------
+
+
+def test_broken_worker_pool_recovers_instead_of_permanent_500(client: TestClient, monkeypatch) -> None:
+    """Смерть воркера лечится пересозданием пула, а не превращает сервис в 500.
+
+    `ProcessPoolExecutor` необратим: после `BrokenProcessPool` — воркера убил
+    OOM killer или он упал в нативном коде — каждый следующий запуск падает
+    той же ошибкой. Без пересоздания один OOM останавливает сервис навсегда,
+    причём `/readyz` продолжает отвечать 200.
+    """
+    from concurrent.futures.process import BrokenProcessPool
+
+    import ocr.concurrency as conc
+    import ocr.pipeline as pipeline
+
+    conc.shutdown_pool()
+
+    calls = {"n": 0}
+    real_pool = conc.shared_pool
+
+    class OneShotBrokenPool:
+        """Первый map падает как сломанный пул, дальше работает настоящий."""
+
+        def map(self, fn, jobs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise BrokenProcessPool("воркер убит")
+            return real_pool().map(fn, jobs)
+
+    monkeypatch.setattr(conc, "shared_pool", lambda: OneShotBrokenPool())
+    monkeypatch.setattr(pipeline.concurrency, "shared_pool", lambda: OneShotBrokenPool())
+    monkeypatch.setattr(pipeline.concurrency, "shared_pool_size", lambda: 4)
+
+    response = client.post(
+        "/ocr", files={"file": ("x.pdf", io.BytesIO(THREE_PAGES.read_bytes()), "application/pdf")}
+    )
+
+    assert calls["n"] >= 2, "повтора после гибели пула не было"
+    assert response.status_code == 200, response.text
+    assert response.json()["text"].strip(), "после восстановления текст пуст"
+
+
+def test_exhausted_pool_recovery_is_visible_in_readiness(client: TestClient, monkeypatch) -> None:
+    """Пул, исчерпавший попытки восстановления, снимает готовность сервиса.
+
+    Иначе балансировщик продолжит слать нагрузку на контейнер, где каждая
+    многостраничная обработка падает.
+    """
+    import ocr.concurrency as conc
+
+    assert client.get("/readyz").status_code == 200
+
+    monkeypatch.setattr(conc, "pool_is_broken", lambda: True)
+    response = client.get("/readyz")
+
+    # Контракт наблюдаемый: сервис объявляет себя неготовым и называет
+    # причину. Конкретная формулировка не закрепляется.
+    assert response.status_code == 503, response.text
+    assert response.json()["status"] == "not_ready"
+    assert response.json()["problems"], "отказ без указания причин"
+
+
+def test_pool_restart_budget_is_bounded_and_resets_on_success() -> None:
+    """Бюджет пересозданий ограничен, но восстанавливается после успеха.
+
+    Без границы устойчивый сбой крутился бы в вечном цикле перезапусков и
+    выглядел как исправный сервис. Без сброса редкие падения, разнесённые во
+    времени, однажды исчерпали бы лимит и остановили исправный сервис.
+    """
+    import ocr.concurrency as conc
+
+    conc.shutdown_pool()
+    conc._pool_restarts = 0
+    conc._pool_broken = False
+    try:
+        for _ in range(conc.MAX_POOL_RESTARTS):
+            assert conc.recycle_pool(conc.pool_generation()) is True
+
+        assert conc.recycle_pool(conc.pool_generation()) is False, "бюджет не ограничен"
+        assert conc.pool_is_broken() is True
+
+        conc._pool_broken = False
+        conc.note_pool_success()
+        assert conc.recycle_pool(conc.pool_generation()) is True, "бюджет не сброшен после успеха"
+    finally:
+        conc._pool_restarts = 0
+        conc._pool_broken = False
+        conc.shutdown_pool()
+
+
+def test_endpoints_use_the_declared_defaults(client: TestClient) -> None:
+    """Умолчания ручек берутся из констант, а не из отдельных литералов.
+
+    Константа, которую никто не читает, ничего не гарантирует: `/ocr` и
+    `/jobs` держали собственные строки, и смена умолчания в одном месте молча
+    расходилась с остальными. Проверяется наблюдаемо — через подмену
+    константы и ответ сервиса, а не чтением исходника.
+    """
+    # Ответ без явных параметров сообщает применённый профиль и render.
+    response = client.post(
+        "/ocr", files={"file": ("x.pdf", io.BytesIO(_pdf_bytes()), "application/pdf")}
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["profile"] == app_module.DEFAULT_PROFILE, body["profile"]
+    assert body["render"] == app_module.DEFAULT_RENDER, body["render"]
+
+    # Умолчание в схеме API совпадает с тем, что применилось фактически:
+    # расхождение означало бы, что клиент видит одно, а получает другое.
+    schema = client.get("/openapi.json").json()
+    for path in ("/ocr", "/jobs"):
+        params = schema["paths"][path]["post"]["parameters"]
+        declared = {p["name"]: p["schema"].get("default") for p in params}
+        assert declared["profile"] == app_module.DEFAULT_PROFILE, (path, declared)
+        assert declared["render"] == app_module.DEFAULT_RENDER, (path, declared)

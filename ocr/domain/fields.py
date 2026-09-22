@@ -95,7 +95,16 @@ def extract_fields(text: str) -> dict[str, list[dict]]:
 
     pairs = {check.digits: check for check in find_amount_pairs(text)}
     amounts: list[dict] = []
-    for value in sorted(set(find_amounts(text))):
+
+    # Величины берутся из двух источников. `find_amounts` ищет «число рядом с
+    # валютой» — строго в пределах одной строки. Пары «цифрами (прописью)»
+    # могут быть собраны через перенос, и подтверждённые прописью значения
+    # надо добавить: иначе сумма, разорванная переносом внутри разрядов,
+    # потерялась бы, хотя пропись её подтверждает.
+    values = set(find_amounts(text))
+    values.update(check.digits for check in pairs.values() if check.ok)
+
+    for value in sorted(values):
         check = pairs.get(value)
         amounts.append(
             {

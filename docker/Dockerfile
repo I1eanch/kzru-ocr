@@ -72,8 +72,10 @@ RUN pip install --no-cache-dir -r requirements.lock
 COPY ocr ./ocr
 COPY service ./service
 
-# Дообученная модель поставляется в образе: она выбрана по замеру
-# (bench/bakeoff.py) и используется профилями по умолчанию.
+# Дообученная модель kzru_doc поставляется в образе для экспериментальных
+# профилей ft-balanced/ft-accurate. Дефолтом она НЕ является: профили
+# fast/balanced/accurate работают на stock-моделях rus+kaz — по замеру
+# (bench/bakeoff.py) дообученная проигрывает stock по CER и теряет один БИН.
 # sha256: 1098082e374c42fcfebb2fed39484f679376d81352aa09591dfe21509565acc9
 COPY models/kzru_doc.traineddata /opt/tessdata_best/
 
@@ -108,6 +110,9 @@ RUN pip install --no-cache-dir -r requirements-dev.txt
 COPY bench ./bench
 # Глоб: сборка не падает, пока есть хотя бы один tests_*.py.
 COPY tests_*.py ./
+# Фикстуры едут вместе с тестами: они отслеживаются git, и прогон в свежем
+# клоне не должен зависеть от игнорируемого bench/scans.
+COPY tests ./tests
 USER ocr
 
 

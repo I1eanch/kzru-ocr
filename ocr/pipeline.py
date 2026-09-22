@@ -18,9 +18,11 @@ bake-off показал ошибку на цифрах в 6-11 раз выше �
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 
 import cv2
@@ -34,6 +36,8 @@ from .layout import xy_cut
 from .model import Document, Page
 from .preprocess import Prepared, prepare
 from .render import PROFILES, RenderProfile, render_document, render_page
+
+log = logging.getLogger("kzru.pipeline")
 
 MAX_PAGES = 30
 MAX_BYTES = 15 * 1024 * 1024
@@ -59,35 +63,34 @@ class PipelineProfile:
 
 
 # Состав профилей выбран по bake-off на 8 документах (13 страниц), а не по
-# ожиданиям. Ключевые результаты, render=cells:
+# ожиданиям. Актуальные результаты — ПОСЛЕ исправления удаления вертикальных
+# линеек, которое перевернуло исходный порядок конфигураций (render=cells):
 #
-#   ft-kzru_doc-psm4-300dpi  CER 0.0343  digit 0.0170  2.35 с/стр ← лучший CER
-#   ft-kzru_doc-psm6-300dpi  CER 0.0357  digit 0.0145  2.44 с/стр ← баланс
-#   ft-kzru_doc-psm4-400dpi  CER 0.0377  digit 0.0133  3.29 с/стр ← лучшие цифры
-#   ft-kzru_doc+rus-psm4     CER 0.0476  digit 0.0329  2.85 с/стр
-#   tess-fast-psm6-300dpi    CER 0.0386  digit 0.0165  2.44 с/стр ← лучший stock
-#   tess-best-psm4-300dpi    CER 0.0401  digit 0.0154  2.63 с/стр
-#   paddle-kk-side1280       CER 0.0389  digit 0.0788  3.35 с/стр
-#   ensemble-tess+paddle     CER 0.0505  digit 0.0169  7.39 с/стр
+#   tess-fast-psm4-300dpi     CER 0.0190  digit 0.0195  ← лучший CER, дефолт
+#   tess-fast-psm6-400dpi     CER 0.0206  digit 0.0107  ← лучшие цифры
+#   ft-kzru_doc-psm4-300dpi   CER 0.0220                ← дообученная, хуже
 #
 # Выводы, каждый против исходного ожидания:
 #
-# 1. Дообученная `kzru_doc` выигрывает по CER (0.0357 против 0.0386) и по
-#    digit-CER (0.0145 против 0.0165), но ТЕРЯЕТ один БИН из шестнадцати:
-#    читает 985435346248 как 085435346248, контрольная сумма даёт несколько
-#    кандидатов, и номер по правилу владельца не исправляется, а помечается.
-#    `bin` recall падает с 1.0000 до 0.9375, и профиль `accurate` с 400 DPI
-#    эту ошибку не выправляет. ТЗ требует безошибочные БИН, суммы и даты,
-#    поэтому дефолт остаётся на stock: выигрыш 7.5% по CER не окупает потерю
-#    номера. Дообученная доступна профилями `ft-*` для перепроверки на
-#    реальных сканах — там расклад может оказаться обратным.
-# 2. Комбинация `kzru_doc+rus` заметно ХУЖЕ одиночной `kzru_doc` (0.0476
-#    против 0.0357): у дообученной модели свой unicharset, и подмешивание
-#    stock-русского только добавляет разнобоя.
+# 1. Дообученная `kzru_doc` до исправления линеек выигрывала по CER и цифрам,
+#    а после — проигрывает stock (0.0220 против 0.0190). Плюс она ТЕРЯЕТ один
+#    БИН из шестнадцати: читает 985435346248 как 085435346248, контрольная
+#    сумма даёт несколько кандидатов, и номер по правилу владельца не
+#    исправляется, а помечается. `bin` recall падает с 1.0000 до 0.9375, и
+#    профиль с 400 DPI эту ошибку не выправляет. ТЗ требует безошибочные БИН,
+#    суммы и даты, поэтому дефолт — stock. Дообученная доступна профилями
+#    `ft-*` для перепроверки на реальных сканах.
+# 2. Комбинация `kzru_doc+rus` заметно хуже одиночной `kzru_doc`: у
+#    дообученной модели свой unicharset, и подмешивание stock-русского
+#    только добавляет разнобоя.
 # 3. PaddleOCR даёт сопоставимый общий CER, но ошибается на цифрах в 6-11 раз
-#    чаще, а ансамбль с ним ухудшает CER относительно каждого движка по
-#    отдельности. Для задачи, где ошибка в цифре недопустима, Paddle в
-#    дефолтный путь не входит.
+#    чаще (digit 0.0788-0.1373 против 0.0125-0.0165), а ансамбль с ним
+#    ухудшает CER относительно каждого движка по отдельности. Для задачи, где
+#    ошибка в цифре недопустима, Paddle в дефолтный путь не входит.
+#
+# Все числа получены на синтетических псевдосканах. На реальных документах
+# заказчика расклад может оказаться другим — это и есть причина, по которой
+# альтернативы оставлены доступными, а не удалены.
 PIPELINE_PROFILES: dict[str, PipelineProfile] = {
     "fast": PipelineProfile(
         name="fast",
@@ -336,6 +339,35 @@ def process_pdf(
     return doc
 
 
+def _map_with_recovery(jobs: list[PageJob]) -> list[PageResult]:
+    """Разложить страницы по общему пулу, пережив смерть воркера.
+
+    Воркера может убить OOM killer или уронить нативная библиотека. После
+    этого `ProcessPoolExecutor` необратимо переходит в состояние
+    `BrokenProcessPool`, и каждый следующий запуск падает той же ошибкой —
+    сервис отвечает 500 на все документы, пока его не перезапустят руками.
+
+    Поэтому пул пересоздаётся и работа повторяется. Повтор ограничен:
+    бюджет пересозданий живёт в `ocr.concurrency` и, когда он исчерпан,
+    runtime помечается нерабочим — отказ становится видимым в `/readyz`,
+    вместо бесконечной череды перезапусков.
+    """
+    while True:
+        generation = concurrency.pool_generation()
+        try:
+            results = list(concurrency.shared_pool().map(_recognize_page, jobs))
+        except BrokenProcessPool:
+            log.warning("пул страничных воркеров сломан, пересоздаю (поколение %s)", generation)
+            if not concurrency.recycle_pool(generation):
+                raise
+            continue
+        # Бюджет пересозданий сбрасывается только после успеха: иначе редкие
+        # падения, разнесённые во времени, однажды исчерпали бы лимит и
+        # остановили исправный сервис.
+        concurrency.note_pool_success()
+        return results
+
+
 def _run_jobs(jobs: list[PageJob], workers: int | None) -> list[PageResult]:
     """Распознаёт страницы, уважая общий бюджет процесса.
 
@@ -358,7 +390,7 @@ def _run_jobs(jobs: list[PageJob], workers: int | None) -> list[PageResult]:
     if workers is None:
         if len(jobs) == 1 or concurrency.shared_pool_size() == 1:
             return [_recognize_page(job) for job in jobs]
-        return list(concurrency.shared_pool().map(_recognize_page, jobs))
+        return _map_with_recovery(jobs)
 
     if workers == 1:
         return [_recognize_page(job) for job in jobs]

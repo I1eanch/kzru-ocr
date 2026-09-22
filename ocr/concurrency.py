@@ -35,9 +35,18 @@ from pathlib import Path
 
 DEFAULT_MAX_DOCUMENTS = 2
 
+# Максимум пересозданий пула подряд. Смысл границы: одиночная смерть воркера
+# (OOM killer, падение нативной библиотеки) обязана лечиться сама, а
+# устойчиво воспроизводящийся сбой — становиться видимым отказом, а не
+# бесконечным циклом перезапусков, который выглядит как исправный сервис.
+MAX_POOL_RESTARTS = 3
+
 _pool: ProcessPoolExecutor | None = None
 _pool_size = 0
-_pool_lock = threading.Lock()
+_pool_lock = threading.RLock()
+_pool_generation = 0
+_pool_restarts = 0
+_pool_broken = False
 
 _doc_semaphore: threading.BoundedSemaphore | None = None
 _doc_lock = threading.Lock()
@@ -132,8 +141,77 @@ def shared_pool() -> ProcessPoolExecutor:
 
 
 def shared_pool_size() -> int:
-    shared_pool()
-    return _pool_size
+    """Размер бюджета воркеров.
+
+    Намеренно не создаёт пул: на inline-пути (бюджет 1) пул не нужен вовсе,
+    а создание меняло бы OMP-переменные окружения процесса как побочный
+    эффект простого запроса размера.
+    """
+    with _pool_lock:
+        if _pool is not None:
+            return _pool_size
+    return page_worker_budget()
+
+
+def pool_generation() -> int:
+    """Номер поколения пула; растёт при каждом пересоздании."""
+    with _pool_lock:
+        return _pool_generation
+
+
+def pool_is_broken() -> bool:
+    """Пул сломан и исчерпал попытки восстановления.
+
+    Читается проверкой готовности: рекламировать работающий runtime, когда
+    каждый запуск страницы падает, недопустимо.
+    """
+    with _pool_lock:
+        return _pool_broken
+
+
+def recycle_pool(seen_generation: int) -> bool:
+    """Пересоздать пул после гибели воркера.
+
+    `ProcessPoolExecutor` необратим: после `BrokenProcessPool` (воркера убил
+    OOM killer или он упал в нативном коде) любой последующий `submit` падает
+    той же ошибкой навсегда. Без пересоздания один OOM превращает сервис в
+    вечные 500 при живой проверке готовности.
+
+    `seen_generation` — поколение, на котором вызывающий получил ошибку. Если
+    пул уже пересоздан кем-то другим, работа не дублируется, и параллельные
+    страницы одного документа не устраивают гонку пересозданий.
+
+    Возвращает False, когда попытки исчерпаны: тогда runtime считается
+    нерабочим до вмешательства оператора, и это видно в `/readyz`.
+    """
+    global _pool, _pool_size, _pool_generation, _pool_restarts, _pool_broken
+
+    with _pool_lock:
+        if seen_generation != _pool_generation:
+            return not _pool_broken  # уже пересоздан другим вызывающим
+        if _pool_restarts >= MAX_POOL_RESTARTS:
+            _pool_broken = True
+            return False
+        old = _pool
+        _pool = None
+        _pool_size = 0
+        _pool_generation += 1
+        _pool_restarts += 1
+    if old is not None:
+        # Вне замка: shutdown сломанного пула может блокировать.
+        old.shutdown(wait=False, cancel_futures=True)
+    return True
+
+
+def note_pool_success() -> None:
+    """Документ обработан целиком: бюджет пересозданий восстановлен.
+
+    Иначе редкие падения, разнесённые на недели, однажды исчерпали бы лимит
+    и остановили исправный сервис.
+    """
+    global _pool_restarts
+    with _pool_lock:
+        _pool_restarts = 0
 
 
 def shutdown_pool() -> None:

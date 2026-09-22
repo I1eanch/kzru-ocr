@@ -14,7 +14,9 @@ set -euo pipefail
 IMAGE="${1:-kzru-ocr:latest}"
 PORT="${SMOKE_PORT:-18099}"
 NAME="kzru-smoke-$$"
-PDF="${SMOKE_PDF:-bench/scans/doc_001_dogovor.pdf}"
+# Отслеживаемая фикстура, а не игнорируемый `bench/scans/`: проверка обязана
+# запускаться в свежем клоне без локальных артефактов.
+PDF="${SMOKE_PDF:-tests/fixtures/one_page.pdf}"
 
 pass() { printf '  \033[32mOK\033[0m   %s\n' "$1"; }
 fail() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; exit 1; }
