@@ -10,8 +10,19 @@ __pycache__
 .bench_check
 venv
 out
+# Артефакты прогонов: в образ им незачем попадать, и без этих строк
+# `docker build` тянет в контекст сотни мегабайт локальных сканов.
+# Каталог `bench/gt` НЕ исключён: он отслеживается git и содержит эталонный
+# текст вместе с независимым эталоном полей `.fields.json`, без которого
+# бенчмарк скатывается к циклической оценке.
 bench/pred
+bench/pred_*
 bench/work
+bench/scans
+bench/data
+bench/report*.csv
+bench/report*.json
+bench/grid_*.json
 train
 docker
 *.traineddata

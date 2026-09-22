@@ -391,9 +391,20 @@ docker run --rm -v "$PWD":/data -w /data kzru-ocr:latest \
   python -m ocr.cli /data/scan.pdf
 
 # каталог, результат в .txt рядом, отчёт с предупреждениями в JSON
-docker run --rm -v "$PWD":/data -w /data kzru-ocr:latest \
+mkdir -p "$PWD/out"
+docker run --rm --user "$(id -u):$(id -g)" \
+  -v "$PWD":/data -w /data kzru-ocr:latest \
   python -m ocr.cli --in-dir /data/scans --out-dir /data/out --json /data/report.json
 ```
+
+Про `--user`: контейнер работает от `uid=10001 (ocr)`, поэтому любой
+смонтированный каталог, **в который** он пишет (`--out-dir`, отчёты,
+результаты bench), должен быть доступен этому uid. На Linux без
+`--user "$(id -u):$(id -g)"` запись упирается в `Permission denied`; на
+macOS Docker Desktop это не проявляется, поэтому проблема легко ускользает
+при локальной проверке. Альтернатива — заранее отдать каталог uid 10001:
+`sudo chown -R 10001:10001 out`. Монтирование только для чтения
+(`-v ...:/data:ro`) флага `--user` не требует.
 
 Основные флаги:
 
@@ -480,15 +491,24 @@ foreach ($result['warnings'] as $w) {
 | `no-headers` | как `default` | убирает колонтитулы и номера страниц |
 | `flat` | ячейки через пробел | всё вышеперечисленное сразу |
 
-Если у вас есть эталонные тексты в своей конвенции, подходящий профиль
-подбирается замером, а не на глаз:
+Если у вас есть эталонные тексты в своей конвенции (каталоги `scans/` и
+`gt/` в текущей директории), подходящий профиль подбирается замером, а не
+на глаз:
 
 ```bash
-docker run --rm -v "$PWD":/data -w /app kzru-ocr:latest \
-  sh -c 'cd /app && sh bench/grid.sh /data/scans /data/gt balanced'
+docker run --rm --user "$(id -u):$(id -g)" \
+  -v "$PWD":/data -e OUT_DIR=/data/grid \
+  kzru-ocr:dev sh /app/bench/grid.sh /data/scans /data/gt balanced
 ```
 
-Скрипт прогоняет все профили вывода и печатает CER/WER по каждому.
+Скрипт прогоняет все профили вывода и печатает CER/WER по каждому. Он живёт
+только в образе `dev` — в `runtime` каталога `bench` нет. Промежуточные
+файлы (`pred_*`, `grid_*.json`) пишутся в `OUT_DIR`: по умолчанию это
+`bench/` рядом со скриптом, что в контейнере недоступно на запись
+(каталог принадлежит root, процесс — uid 10001), поэтому `OUT_DIR` обязателен.
+Здесь он указывает в смонтированный `/data`, и результаты остаются у вас
+в `./grid/`; если файлы не нужны, подойдёт и `-e OUT_DIR=/tmp/grid` —
+тогда `--user` можно опустить.
 
 ---
 
@@ -613,7 +633,8 @@ scripts/smoke.sh kzru-ocr:latest
 не нужны:
 
 ```bash
-docker run --rm -v "$PWD":/data -w /app kzru-ocr:dev sh -c '
+docker run --rm --user "$(id -u):$(id -g)" \
+  -v "$PWD":/data -w /app kzru-ocr:dev sh -c '
   python -m bench.make_sample_docs --out-dir /data/bench/data --count 8 --seed 42
   python -m bench.make_pseudoscan --src-dir /data/bench/data \
       --out-dir /data/bench/scans --gt-dir /data/bench/gt \
@@ -636,11 +657,11 @@ docker run --rm -v "$PWD":/data -w /app kzru-ocr:dev sh -c '
 > Если рядом с эталонным текстом нет `.fields.json`, `run_bench` разбирает
 > эталон тем же экстрактором, что и предсказание, и честно предупреждает, что
 > оценка циклична. Разница не теоретическая: на одном и том же наборе
-> циклическая оценка дала `amounts exact 1.0` ещё тогда, когда экстрактор
-> вовсе не видел суммы, разорванные переносом строки; независимый замер
-> вскрыл это как `0.6667`. После исправления экстрактора независимый замер
-> даёт `1.0000`,
-> потому что экстрактор одинаково пропускал сумму с обеих сторон.
+> циклическая оценка показывала `amounts exact 1.0` ещё тогда, когда
+> экстрактор вовсе не видел суммы, разорванные переносом строки — дефект
+> маскировался с обеих сторон. Независимый замер по `.fields.json` вскрыл
+> это как `0.6667`; после исправления экстрактора независимый замер даёт
+> `1.0000`.
 
 ### 5. Бенчмарк на ваших документах
 
@@ -654,7 +675,8 @@ your-data/
 ```
 
 ```bash
-docker run --rm -v /path/to/your-data:/data -w /app kzru-ocr:dev sh -c '
+docker run --rm --user "$(id -u):$(id -g)" \
+  -v /path/to/your-data:/data -w /app kzru-ocr:dev sh -c '
   python -m ocr.cli --in-dir /data/scans --out-dir /data/pred --profile balanced
   python -m bench.run_bench --pred-dir /data/pred --gt-dir /data/gt \
       --csv /data/report.csv --json /data/report.json --worst 10'
@@ -682,7 +704,8 @@ CER = 1.0 и помечается `MISSING` — он не пропускаетс
 Если нужно выбрать движок или параметры под ваши документы:
 
 ```bash
-docker run --rm -v /path/to/your-data:/data -w /app kzru-ocr:dev \
+docker run --rm --user "$(id -u):$(id -g)" \
+  -v /path/to/your-data:/data -w /app kzru-ocr:dev \
   python -m bench.bakeoff --scans /data/scans --gt /data/gt --only tesseract
 ```
 
@@ -694,8 +717,9 @@ docker run --rm -v /path/to/your-data:/data -w /app kzru-ocr:dev \
 ### 7. Замер производительности
 
 ```bash
-docker run --rm -v "$PWD":/data -w /app kzru-ocr:dev \
-  python -m bench.measure_parallel --pdf /data/bench/scans/doc_001.pdf --repeat 8
+docker run --rm --user "$(id -u):$(id -g)" \
+  -v "$PWD":/data -w /app kzru-ocr:dev \
+  python -m bench.measure_parallel --pdf /data/bench/scans/doc_001_dogovor.pdf --repeat 8
 ```
 
 Печатает время и ускорение при разном числе процессов.
@@ -759,7 +783,7 @@ docker run --rm -v "$PWD":/data -w /app kzru-ocr:dev \
 
 > Эти цифры получены на синтетических документах с чистыми гарнитурами.
 > На реальных сканах их нужно перепроверить — для этого и существует
-> [бенчмарк на ваших документах](#3-бенчмарк-на-ваших-документах).
+> [бенчмарк на ваших документах](#5-бенчмарк-на-ваших-документах).
 
 ---
 

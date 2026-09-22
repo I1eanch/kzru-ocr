@@ -276,6 +276,11 @@ docker run --rm -v "$PWD":/work -w /work kzru-ocr:train \
     MAX_ITERATIONS=10000 RATIO_TRAIN=0.95
 ```
 
+Образ `train` работает от root, поэтому файлы, записанные в `/work`, на
+Linux-хосте окажутся root-owned — заберите их `sudo chown -R
+"$(id -u):$(id -g)" train/` или запустите контейнер с `--user "$(id
+-u):$(id -g)"`. На macOS Docker Desktop это не проявляется.
+
 Три места, на которых это ломается, и все молча:
 
 - **`-j` обязателен.** Подготовка строит `.box` и `.lstmf` по одной строке на

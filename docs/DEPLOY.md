@@ -34,6 +34,10 @@ docker build --platform linux/amd64 --target full -t kzru-ocr:full -f docker/Doc
   `requirements.txt` с `==`-пинами.
 - Dev-зависимости: `requirements-dev.txt` (`==`-пины).
 - Paddle-таргет: `requirements-paddle.txt` (`paddlepaddle==3.0.0`,
+  `paddleocr==3.0.0`; транзитивные зависимости не закреплены — отдельного
+  lock для этого таргета нет). Сам таргет нужен только для экспериментов:
+  по bake-off PaddleOCR ошибается на цифрах в 6–11 раз чаще Tesseract,
+  поэтому в дефолтный путь он не входит.
 - Системные пакеты Debian (tesseract-ocr 5.3.0, poppler-utils и пр.)
   **не закреплены**: `apt-get update` в Dockerfile тянет текущее состояние
   репозитория bookworm, и digest базового образа их версии не фиксирует —
@@ -115,12 +119,65 @@ HEALTHCHECK переходит в `healthy`.
 CLI-режим (пакетная обработка без сервиса):
 
 ```bash
+mkdir -p "$PWD/out"
 docker run --rm --read-only --tmpfs /tmp \
-  -v "$PWD/scans:/data:ro" -w /data \
-  kzru-ocr:latest python -m ocr.cli --in-dir . --out-dir /tmp/out
-# заберите результат: -v "$PWD/out:/tmp/out" не работает с tmpfs —
-# для вывода смонтируйте отдельный каталог: -v "$PWD/out:/out" и --out-dir /out
+  --user "$(id -u):$(id -g)" \
+  -v "$PWD/scans:/data:ro" -v "$PWD/out:/out" \
+  kzru-ocr:latest python -m ocr.cli --in-dir /data --out-dir /out
 ```
+
+Про `--user` и права на bind-mount: контейнер работает от `uid=10001 (ocr)`,
+поэтому каталог, в который он пишет, обязан быть доступен этому uid. На
+Linux без `--user "$(id -u):$(id -g)"` запись в смонтированный каталог
+упирается в `Permission denied`; на macOS Docker Desktop это не проявляется
+(файлы отображаются на владельца хоста), поэтому проблема легко ускользает
+при локальной проверке. Альтернатива `--user` — заранее отдать каталог
+uid 10001: `sudo chown -R 10001:10001 out` (или `chmod 777 out`).
+`--user` удобнее тем, что результаты сразу принадлежат вам.
+
+## Граница размера запроса и обратный прокси
+
+Приложение отвергает тело больше `MAX_REQUEST_BYTES` (16 777 216 байт =
+`MAX_BYTES` 15 МБ + 1 МБ на multipart-обёртку, `service/app.py`), но только
+по заголовку `Content-Length`. При `Transfer-Encoding: chunked` этого
+заголовка нет: размер заранее неизвестен, и на уровне приложения дешёвого
+способа отказать до приёма тела нет — **границу обязан ставить обратный
+прокси**.
+
+> [!WARNING]
+> Без прокси и при chunked-загрузке тело запроса принимается целиком до
+> проверки размера файла: лимит сработает только после того, как тело уже
+> прочитано и разобрано.
+
+Минимальный конфиг nginx перед сервисом (порт опубликован на loopback,
+как в команде выше):
+
+```nginx
+server {
+    listen 8080;
+
+    # то же значение, что MAX_REQUEST_BYTES в service/app.py
+    # (16m = 16777216 байт); держите их равными при изменении лимита
+    client_max_body_size 16m;
+
+    location / {
+        proxy_pass http://127.0.0.1:8099;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+
+        # OCR 30-страничного документа занимает десятки секунд;
+        # дефолтные 60 с оборвут долгий запрос
+        proxy_connect_timeout 10s;
+        proxy_send_timeout    120s;
+        proxy_read_timeout    300s;
+        client_body_timeout   120s;
+    }
+}
+```
+
+nginx буферизует тело запроса и обрывает приём на `client_max_body_size`
+с ответом `413` ещё до того, как тело уйдёт в сервис — это закрывает и
+chunked-загрузки.
 
 ## Healthcheck и пробы
 

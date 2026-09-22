@@ -248,9 +248,13 @@ def _validate_request(profile: str, render: str) -> None:
     # ошибка клиента. 400 здесь врал бы — запрос корректен.
     problem = _profile_problem(PIPELINE_PROFILES[profile])
     if problem:
+        # Причина содержит путь к каталогу моделей — наружу это утечка
+        # деталей файловой системы. Клиенту фиксированная формулировка,
+        # подробность администратору: в журнал и в `/readyz`.
+        log.warning("профиль %s недоступен: %s", profile, problem)
         raise HTTPException(
             status_code=503,
-            detail=f"профиль {profile} недоступен: {problem}",
+            detail=f"профиль {profile} недоступен, обратитесь к администратору",
             headers={"Retry-After": "30"},
         )
 
@@ -465,20 +469,24 @@ def ocr(
 
 
 def _reap_jobs(now: float | None = None) -> int:
-    """Удаляет просроченные задания вместе с их временными файлами."""
+    """Удаляет просроченные задания.
+
+    Временных файлов здесь уже нет. Владелец файла — задача: `_run` удаляет
+    его в `finally` при любом исходе, и тем же действием, которым записывает
+    результат, задача обнуляет `_upload`. Срок жизни (`_expires_at`)
+    выставляется только в этот момент, поэтому всякая просроченная запись
+    приходит сюда без файла. Ветка удаления файла здесь была недостижимой и
+    создавала ложное впечатление, что владельцев двое.
+    """
     now = now if now is not None else time.monotonic()
     removed = 0
     with _jobs_lock:
         for job_id, job in list(_jobs.items()):
             expires = job.get("_expires_at")
             if expires is not None and expires <= now:
-                upload = job.get("_upload")
-                if upload:
-                    Path(upload).unlink(missing_ok=True)
                 del _jobs[job_id]
                 removed += 1
     return removed
-
 
 def _public_job(job: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in job.items() if not k.startswith("_")}
@@ -591,7 +599,9 @@ def get_job(job_id: str, consume: bool = Query(False)) -> dict[str, Any]:
     """Состояние задания.
 
     `consume=1` удаляет результат сразу после выдачи. Иначе он живёт до
-    истечения TTL, после чего удаляется вместе с временными файлами.
+    истечения TTL и затем удаляется. Временных файлов к этому моменту уже
+    нет: их удаляет сама задача, и срок жизни записи начинает течь только
+    после её завершения.
     """
     _reap_jobs()
     with _jobs_lock:
@@ -610,8 +620,11 @@ def delete_job(job_id: str) -> Response:
 
     Прежняя версия удаляла входной файл сразу. Если задание в этот момент
     обрабатывалось, воркер терял файл под собой и падал внутренней ошибкой.
-    Владелец временного файла — сама задача: она удаляет его в `finally`,
-    поэтому здесь достаточно снять запись и поднять флаг отмены.
+
+    Владелец временного файла один — сама задача: `_run` удаляет его в
+    `finally` при любом исходе, включая отмену. Поэтому здесь файл не
+    трогается вовсе: достаточно снять запись и поднять флаг отмены, чтобы
+    задание, ещё стоящее в очереди за слотом, не ждало напрасно.
     """
     with _jobs_lock:
         job = _jobs.pop(job_id, None)
@@ -622,12 +635,6 @@ def delete_job(job_id: str) -> Response:
     if cancel is not None:
         cancel.set()
 
-    # Файл удаляется здесь только у завершённых заданий: у них владельца уже
-    # нет. У принятого или работающего задания его уберёт сама задача.
-    if job.get("status") in ("done", "failed"):
-        upload = job.get("_upload")
-        if upload:
-            Path(upload).unlink(missing_ok=True)
     # Именно Response, а не JSONResponse: у 204 не должно быть тела, а
     # JSONResponse(content=None) сериализует "null", расходится с
     # Content-Length и роняет соединение с RuntimeError в uvicorn.

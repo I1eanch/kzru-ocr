@@ -597,6 +597,10 @@ def test_unavailable_profile_is_service_error_not_client_error(client: TestClien
         files={"file": ("x.pdf", io.BytesIO(_pdf_bytes()), "application/pdf")},
     )
     assert response.status_code == 503, response.text
+    # Причина отказа содержит путь к каталогу моделей: наружу он не уходит,
+    # администратор видит его в журнале и в `/readyz`.
+    detail = response.json()["detail"]
+    assert "/opt" not in detail and "tessdata" not in detail, detail
 
     advertised = client.get("/readyz").json()["profiles"]
     assert "fast" not in advertised, advertised
@@ -741,3 +745,39 @@ def test_endpoints_use_the_declared_defaults(client: TestClient) -> None:
         declared = {p["name"]: p["schema"].get("default") for p in params}
         assert declared["profile"] == app_module.DEFAULT_PROFILE, (path, declared)
         assert declared["render"] == app_module.DEFAULT_RENDER, (path, declared)
+
+
+def test_permanently_broken_pool_gives_up_instead_of_looping(client: TestClient, monkeypatch) -> None:
+    """Документ, на котором пул ломается всегда, не уходит в бесконечный цикл.
+
+    Глобального бюджета пересозданий мало: его сбрасывает любой чужой успешно
+    обработанный документ, поэтому документ, валящий воркера сам по себе,
+    крутился бы вечно. Граница на документ должна остановить это независимо
+    от глобального счётчика.
+    """
+    from concurrent.futures.process import BrokenProcessPool
+
+    import ocr.concurrency as conc
+    import ocr.pipeline as pipeline
+
+    attempts = {"n": 0}
+
+    class AlwaysBrokenPool:
+        def map(self, fn, jobs):
+            attempts["n"] += 1
+            raise BrokenProcessPool("воркер убит")
+
+    monkeypatch.setattr(pipeline.concurrency, "shared_pool", lambda: AlwaysBrokenPool())
+    monkeypatch.setattr(pipeline.concurrency, "shared_pool_size", lambda: 4)
+    # Глобальный бюджет всегда разрешает пересоздание: проверяем именно
+    # локальную границу.
+    monkeypatch.setattr(pipeline.concurrency, "recycle_pool", lambda gen: True)
+    monkeypatch.setattr(pipeline.concurrency, "pool_generation", lambda: 0)
+
+    response = client.post(
+        "/ocr", files={"file": ("x.pdf", io.BytesIO(THREE_PAGES.read_bytes()), "application/pdf")}
+    )
+
+    assert attempts["n"] == pipeline.MAX_DOCUMENT_POOL_RETRIES + 1, attempts
+    assert response.status_code >= 500, response.text
+    assert conc.pool_is_broken() is False, "локальная сдача не должна ломать весь runtime"

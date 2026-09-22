@@ -7,24 +7,31 @@
 # этом не меняется — меняется только сериализация.
 #
 #   sh bench/grid.sh bench/scans bench/gt balanced
+#
+# Промежуточные результаты (pred_*, grid_*.json) пишутся в OUT_DIR — по
+# умолчанию bench/ рядом со скриптом. В контейнере каталог bench/
+# принадлежит root и недоступен на запись uid 10001, поэтому там
+# передавайте записываемый путь: OUT_DIR=/tmp/grid или точку монтирования.
 set -eu
 
 SCANS="${1:-bench/scans}"
 GT="${2:-bench/gt}"
 OCR_PROFILE="${3:-balanced}"
 RENDERS="${RENDERS:-default cells pipe space joined no-headers flat}"
+OUT_DIR="${OUT_DIR:-bench}"
+mkdir -p "$OUT_DIR"
 
 printf '%-12s %10s %10s %10s %10s\n' render CERstrict CERnorm WERstrict WERnorm
 
 for r in $RENDERS; do
-    out="bench/pred_$r"
+    out="$OUT_DIR/pred_$r"
     python -m ocr.cli --in-dir "$SCANS" --out-dir "$out" \
         --profile "$OCR_PROFILE" --render "$r" >/dev/null 2>&1
 
     python -m bench.run_bench --pred-dir "$out" --gt-dir "$GT" \
-        --json "bench/grid_$r.json" >/dev/null 2>&1
+        --json "$OUT_DIR/grid_$r.json" >/dev/null 2>&1
 
-    python - "$r" "bench/grid_$r.json" <<'PY'
+    python - "$r" "$OUT_DIR/grid_$r.json" <<'PY'
 import json
 import sys
 
