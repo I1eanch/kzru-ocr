@@ -46,6 +46,8 @@ class PipelineProfile:
     name: str
     engines: tuple[str, ...] = ("tesseract",)
     tessdata: str = "best"
+    lang: str = "rus+kaz"
+    """Языки Tesseract. Дообученная модель подключается сюда: `kzru_doc`."""
     psm: int = 6
     orientation: bool = True
     deskew: bool = True
@@ -103,7 +105,7 @@ _ENGINES: dict[tuple, object] = {}
 
 def _engine(kind: str, profile: PipelineProfile):
     """Кэш движка в пределах процесса: загрузка модели стоит секунды."""
-    key = (kind, profile.tessdata, profile.psm, profile.paddle_limit)
+    key = (kind, profile.tessdata, profile.lang, profile.psm, profile.paddle_limit)
     cached = _ENGINES.get(key)
     if cached is not None:
         return cached
@@ -111,7 +113,7 @@ def _engine(kind: str, profile: PipelineProfile):
     if kind == "tesseract":
         from .engines.tesseract import TesseractEngine
 
-        engine = TesseractEngine(tessdata=profile.tessdata, psm=profile.psm)
+        engine = TesseractEngine(lang=profile.lang, tessdata=profile.tessdata, psm=profile.psm)
     elif kind == "paddle":
         from .engines.paddle import PaddleEngine
 

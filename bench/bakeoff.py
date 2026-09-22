@@ -66,6 +66,29 @@ def paddle_matrix() -> list[PipelineProfile]:
     ]
 
 
+def finetuned_matrix() -> list[PipelineProfile]:
+    """Дообученная модель против stock на тех же документах.
+
+    BCER, который печатает обучение, считается на той же синтетике, которой
+    модель училась, и качеством на документах не является. Решение о замене
+    stock-модели принимается только по этой таблице.
+    """
+    out: list[PipelineProfile] = []
+    for lang in ("kzru_doc", "kzru_doc+rus"):
+        for psm in (4, 6):
+            out.append(
+                PipelineProfile(
+                    name=f"ft-{lang}-psm{psm}-300dpi",
+                    engines=("tesseract",),
+                    tessdata="best",
+                    lang=lang,
+                    psm=psm,
+                    base_dpi=300,
+                )
+            )
+    return out
+
+
 def ensemble_matrix() -> list[PipelineProfile]:
     return [
         PipelineProfile(
@@ -130,7 +153,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scans", default="bench/scans")
     parser.add_argument("--gt", default="bench/gt")
     parser.add_argument("--render", default="cells")
-    parser.add_argument("--only", choices=["tesseract", "paddle", "ensemble"], action="append")
+    parser.add_argument(
+        "--only",
+        choices=["tesseract", "paddle", "ensemble", "finetuned"],
+        action="append",
+        help="какие группы конфигураций прогонять",
+    )
     parser.add_argument("--limit", type=int, default=0, help="взять только N документов")
     args = parser.parse_args(argv)
 
@@ -148,6 +176,8 @@ def main(argv: list[str] | None = None) -> int:
         profiles += paddle_matrix()
     if "ensemble" in groups:
         profiles += ensemble_matrix()
+    if "finetuned" in groups:
+        profiles += finetuned_matrix()
 
     print(f"документов: {len(scans)}, конфигураций: {len(profiles)}, render={args.render}\n")
     header = f"{'конфигурация':<26}{'CER norm':>10}{'digit CER':>11}{'с/стр':>8}{'стр':>6}{'fail':>6}"
