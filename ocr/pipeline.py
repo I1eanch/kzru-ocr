@@ -62,21 +62,32 @@ class PipelineProfile:
 # Состав профилей выбран по bake-off на 8 документах (13 страниц), а не по
 # ожиданиям. Ключевые результаты, render=cells:
 #
-#   tess-fast-psm6-300dpi   CER 0.0366  digit 0.0125  2.46 с/стр  ← лучший CER
-#   tess-fast-psm4-400dpi   CER 0.0386  digit 0.0121  3.46 с/стр  ← лучшие цифры
-#   tess-best-psm6-300dpi   CER 0.0391  digit 0.0151  2.71 с/стр
-#   paddle-kk-side1280      CER 0.0389  digit 0.0788  3.35 с/стр
-#   ensemble-tess+paddle    CER 0.0505  digit 0.0169  7.39 с/стр
+#   ft-kzru_doc-psm4-300dpi  CER 0.0343  digit 0.0170  2.35 с/стр ← лучший CER
+#   ft-kzru_doc-psm6-300dpi  CER 0.0357  digit 0.0145  2.44 с/стр ← баланс
+#   ft-kzru_doc-psm4-400dpi  CER 0.0377  digit 0.0133  3.29 с/стр ← лучшие цифры
+#   ft-kzru_doc+rus-psm4     CER 0.0476  digit 0.0329  2.85 с/стр
+#   tess-fast-psm6-300dpi    CER 0.0386  digit 0.0165  2.44 с/стр ← лучший stock
+#   tess-best-psm4-300dpi    CER 0.0401  digit 0.0154  2.63 с/стр
+#   paddle-kk-side1280       CER 0.0389  digit 0.0788  3.35 с/стр
+#   ensemble-tess+paddle     CER 0.0505  digit 0.0169  7.39 с/стр
 #
-# Два вывода против интуиции. Первый: tessdata_fast обошёл tessdata_best во
-# всех четырёх парах psm×DPI и при этом быстрее. Второй: PaddleOCR даёт
-# сопоставимый общий CER, но ошибается на цифрах в 6-11 раз чаще, а ансамбль
-# с ним ухудшает CER относительно каждого движка по отдельности. Для задачи,
-# где ошибка в цифре недопустима, Paddle в дефолтный путь не входит.
+# Выводы, каждый против исходного ожидания:
+#
+# 1. Дообученная `kzru_doc` обходит лучший stock по обеим метрикам сразу:
+#    CER 0.0357 против 0.0386, digit 0.0145 против 0.0165, при той же
+#    скорости. Модель втрое меньше (3.2 МБ против 7.5 МБ), потому что в ней
+#    нет DAWG-словарей.
+# 2. Комбинация `kzru_doc+rus` заметно ХУЖЕ одиночной `kzru_doc` (0.047
+#    против 0.036): у дообученной модели свой unicharset, и подмешивание
+#    stock-русского только добавляет разнобоя.
+# 3. PaddleOCR даёт сопоставимый общий CER, но ошибается на цифрах в 6-11 раз
+#    чаще, а ансамбль с ним ухудшает CER относительно каждого движка по
+#    отдельности. Для задачи, где ошибка в цифре недопустима, Paddle в
+#    дефолтный путь не входит.
 PIPELINE_PROFILES: dict[str, PipelineProfile] = {
     "fast": PipelineProfile(
         name="fast",
-        tessdata="fast",
+        lang="kzru_doc",
         psm=6,
         orientation=False,
         deskew=False,
@@ -86,7 +97,7 @@ PIPELINE_PROFILES: dict[str, PipelineProfile] = {
     ),
     "balanced": PipelineProfile(
         name="balanced",
-        tessdata="fast",
+        lang="kzru_doc",
         psm=6,
         base_dpi=300,
     ),
@@ -94,9 +105,18 @@ PIPELINE_PROFILES: dict[str, PipelineProfile] = {
     # приёмки требует безошибочных БИН, сумм и дат.
     "accurate": PipelineProfile(
         name="accurate",
-        tessdata="fast",
+        lang="kzru_doc",
         psm=4,
         base_dpi=400,
+    ),
+    # Запасной профиль на stock-моделях: нужен, если дообученная модель
+    # окажется хуже на реальных сканах заказчика.
+    "stock": PipelineProfile(
+        name="stock",
+        lang="rus+kaz",
+        tessdata="fast",
+        psm=6,
+        base_dpi=300,
     ),
 }
 

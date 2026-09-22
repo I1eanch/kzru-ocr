@@ -16,7 +16,10 @@ bench/data/
 bench/report*.csv
 bench/report*.json
 bench/grid_*.json
+# промежуточные модели обучения игнорируются, но поставляемая — нет:
+# заказчик должен получить готовый kzru_doc вместе с кодом
 *.traineddata
+!models/*.traineddata
 train/data/
 train/synth/
 

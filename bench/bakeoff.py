@@ -76,16 +76,17 @@ def finetuned_matrix() -> list[PipelineProfile]:
     out: list[PipelineProfile] = []
     for lang in ("kzru_doc", "kzru_doc+rus"):
         for psm in (4, 6):
-            out.append(
-                PipelineProfile(
-                    name=f"ft-{lang}-psm{psm}-300dpi",
-                    engines=("tesseract",),
-                    tessdata="best",
-                    lang=lang,
-                    psm=psm,
-                    base_dpi=300,
+            for dpi in (300, 400):
+                out.append(
+                    PipelineProfile(
+                        name=f"ft-{lang}-psm{psm}-{dpi}dpi",
+                        engines=("tesseract",),
+                        tessdata="best",
+                        lang=lang,
+                        psm=psm,
+                        base_dpi=dpi,
+                    )
                 )
-            )
     return out
 
 

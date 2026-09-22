@@ -55,6 +55,10 @@ COPY service ./service
 COPY bench ./bench
 COPY tests_domain.py ./
 
+# Дообученная модель поставляется в образе: она выбрана по замеру
+# (bench/bakeoff.py) и используется профилями по умолчанию.
+COPY models/kzru_doc.traineddata /opt/tessdata_best/
+
 ENV TESSDATA_PREFIX=/opt/tessdata_best
 EXPOSE 8099
 

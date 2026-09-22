@@ -12,6 +12,7 @@ bench/scans
 train/data
 train/synth
 *.traineddata
+!models/*.traineddata
 README.md
 php
 docs
