@@ -115,11 +115,26 @@ def _save_upload(upload: UploadFile) -> Path:
     return path
 
 
+class RecognitionUnavailable(RuntimeError):
+    """Ни одна страница не распозналась — сервис неисправен, а не документ плох."""
+
+
 def _run(path: Path, name: str, profile: str, render: str) -> dict[str, Any]:
     """Обрабатывает документ, занимая слот общего бюджета."""
     try:
         with concurrency.document_slot(timeout=SLOT_TIMEOUT_SECONDS):
             doc = process_pdf(str(path), profile=profile, render=render)
+
+        # Если распознавание не дало ни одной страницы, отдавать 200 с пустым
+        # текстом нельзя: клиент, не разобравший `warnings`, запишет пустоту
+        # как результат проверки документа. Такой отказ относится к сервису,
+        # а не к входному файлу, поэтому наружу он уходит как 503.
+        ocr_pages = [p for p in doc.pages if p.source == "ocr"]
+        failed_pages = {w.page for w in doc.warnings if w.type == "page_failed"}
+        if ocr_pages and len(failed_pages) >= len(ocr_pages):
+            details = sorted({w.detail for w in doc.warnings if w.type == "page_failed"})
+            raise RecognitionUnavailable("; ".join(details)[:300])
+
         return _document_payload(doc, name, render)
     finally:
         path.unlink(missing_ok=True)
@@ -292,6 +307,12 @@ def ocr(
             detail="сервис занят, повторите позже",
             headers={"Retry-After": "30"},
         ) from exc
+    except RecognitionUnavailable as exc:
+        log.error("распознавание недоступно: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="распознавание недоступно, обратитесь к администратору",
+        ) from exc
     except ValueError as exc:
         raise _client_error(422, str(exc)) from exc
     except Exception as exc:
@@ -365,6 +386,9 @@ def create_job(
             record: dict[str, Any] = {"status": "done", "result": result}
         except concurrency.CapacityExceeded:
             record = {"status": "failed", "error": "сервис занят, задание не запущено"}
+        except RecognitionUnavailable as exc:
+            log.error("job %s: распознавание недоступно: %s", job_id, exc)
+            record = {"status": "failed", "error": "распознавание недоступно"}
         except ValueError as exc:
             record = {"status": "failed", "error": str(exc)}
         except Exception as exc:  # noqa: BLE001 — подробности уходят в журнал

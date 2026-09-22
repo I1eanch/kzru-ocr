@@ -322,23 +322,51 @@ def test_fields_carry_verification_status(client: TestClient) -> None:
         assert item["status"] in ("valid", "invalid")
 
 
-def test_page_failure_surfaces_as_warning(client: TestClient, monkeypatch) -> None:
-    """Сбой страницы не теряется: он доходит до клиента предупреждением."""
+def test_partial_page_failure_surfaces_as_warning(client: TestClient, monkeypatch) -> None:
+    """Сбой одной страницы не теряется и не роняет весь документ.
+
+    Документ отдаётся с предупреждением; на 503 он уходит только если не
+    распозналась ни одна страница — это разные ситуации.
+    """
     import ocr.pipeline as pipeline
 
     original = pipeline._recognize_page
 
     def failing(job):
         result = original(job)
-        result.error = "искусственный сбой страницы"
+        if job.index == 0:
+            result.error = "искусственный сбой страницы"
         return result
 
     monkeypatch.setattr(pipeline, "_recognize_page", failing)
+    with open("bench/scans/doc_006_ustav.pdf", "rb") as fh:
+        multipage = fh.read()
+
     response = client.post(
         "/ocr",
-        params={"workers": 1},
-        files={"file": ("x.pdf", io.BytesIO(_pdf_bytes()), "application/pdf")},
+        files={"file": ("x.pdf", io.BytesIO(multipage), "application/pdf")},
     )
-    assert response.status_code == 200
+    assert response.status_code == 200, response.json()
     types = {w["type"] for w in response.json()["warnings"]}
     assert "page_failed" in types, types
+    assert response.json()["text"].strip(), "текст уцелевших страниц должен остаться"
+
+
+def test_all_pages_failed_is_service_error_not_empty_success(client: TestClient, monkeypatch) -> None:
+    """Документ, не распознавшийся целиком, не отдаётся как успех с пустым текстом.
+
+    Иначе клиент, не разобравший `warnings`, запишет пустоту как результат
+    проверки документа. Наблюдалось вживую: при сломанном каталоге моделей
+    `/ocr` отвечал 200, `text` был пуст, а уверенность равна нулю.
+    """
+    import ocr.pipeline as pipeline
+
+    def failing(job):
+        result = pipeline.PageResult(index=job.index, page=pipeline.Page(index=job.index))
+        result.error = "EngineUnavailable: моделей нет"
+        return result
+
+    monkeypatch.setattr(pipeline, "_recognize_page", failing)
+    response = client.post("/ocr", files={"file": ("x.pdf", io.BytesIO(_pdf_bytes()), "application/pdf")})
+    assert response.status_code == 503, response.json()
+    assert "распознавание недоступно" in response.json()["detail"]
