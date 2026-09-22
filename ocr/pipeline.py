@@ -73,12 +73,17 @@ class PipelineProfile:
 #
 # Выводы, каждый против исходного ожидания:
 #
-# 1. Дообученная `kzru_doc` обходит лучший stock по обеим метрикам сразу:
-#    CER 0.0357 против 0.0386, digit 0.0145 против 0.0165, при той же
-#    скорости. Модель втрое меньше (3.2 МБ против 7.5 МБ), потому что в ней
-#    нет DAWG-словарей.
-# 2. Комбинация `kzru_doc+rus` заметно ХУЖЕ одиночной `kzru_doc` (0.047
-#    против 0.036): у дообученной модели свой unicharset, и подмешивание
+# 1. Дообученная `kzru_doc` выигрывает по CER (0.0357 против 0.0386) и по
+#    digit-CER (0.0145 против 0.0165), но ТЕРЯЕТ один БИН из шестнадцати:
+#    читает 985435346248 как 085435346248, контрольная сумма даёт несколько
+#    кандидатов, и номер по правилу владельца не исправляется, а помечается.
+#    `bin` recall падает с 1.0000 до 0.9375, и профиль `accurate` с 400 DPI
+#    эту ошибку не выправляет. ТЗ требует безошибочные БИН, суммы и даты,
+#    поэтому дефолт остаётся на stock: выигрыш 7.5% по CER не окупает потерю
+#    номера. Дообученная доступна профилями `ft-*` для перепроверки на
+#    реальных сканах — там расклад может оказаться обратным.
+# 2. Комбинация `kzru_doc+rus` заметно ХУЖЕ одиночной `kzru_doc` (0.0476
+#    против 0.0357): у дообученной модели свой unicharset, и подмешивание
 #    stock-русского только добавляет разнобоя.
 # 3. PaddleOCR даёт сопоставимый общий CER, но ошибается на цифрах в 6-11 раз
 #    чаще, а ансамбль с ним ухудшает CER относительно каждого движка по
@@ -87,7 +92,8 @@ class PipelineProfile:
 PIPELINE_PROFILES: dict[str, PipelineProfile] = {
     "fast": PipelineProfile(
         name="fast",
-        lang="kzru_doc",
+        lang="rus+kaz",
+        tessdata="fast",
         psm=6,
         orientation=False,
         deskew=False,
@@ -97,7 +103,8 @@ PIPELINE_PROFILES: dict[str, PipelineProfile] = {
     ),
     "balanced": PipelineProfile(
         name="balanced",
-        lang="kzru_doc",
+        lang="rus+kaz",
+        tessdata="fast",
         psm=6,
         base_dpi=300,
     ),
@@ -105,18 +112,24 @@ PIPELINE_PROFILES: dict[str, PipelineProfile] = {
     # приёмки требует безошибочных БИН, сумм и дат.
     "accurate": PipelineProfile(
         name="accurate",
-        lang="kzru_doc",
-        psm=4,
-        base_dpi=400,
-    ),
-    # Запасной профиль на stock-моделях: нужен, если дообученная модель
-    # окажется хуже на реальных сканах заказчика.
-    "stock": PipelineProfile(
-        name="stock",
         lang="rus+kaz",
         tessdata="fast",
         psm=6,
+        base_dpi=400,
+    ),
+    # Дообученная модель: лучший CER, но на текущем наборе теряет один БИН.
+    # Проверяется на реальных сканах перед тем, как становиться дефолтом.
+    "ft-balanced": PipelineProfile(
+        name="ft-balanced",
+        lang="kzru_doc",
+        psm=6,
         base_dpi=300,
+    ),
+    "ft-accurate": PipelineProfile(
+        name="ft-accurate",
+        lang="kzru_doc",
+        psm=4,
+        base_dpi=400,
     ),
 }
 
