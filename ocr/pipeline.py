@@ -370,6 +370,11 @@ def _map_with_recovery(jobs: list[PageJob]) -> list[PageResult]:
             attempts += 1
             if attempts > MAX_DOCUMENT_POOL_RETRIES:
                 log.error("пул ломается на этом документе %s раз подряд, сдаюсь", attempts)
+                # Сломанный экземпляр нельзя оставлять следующему документу,
+                # а потраченные на этот файл пересоздания возвращаются в
+                # общий бюджет: он отличает единичный OOM от неисправного
+                # окружения, и отравленный файл не должен его съедать.
+                concurrency.discard_pool(generation, refund=attempts - 1)
                 raise
             log.warning(
                 "пул страничных воркеров сломан, пересоздаю (поколение %s, попытка %s)",

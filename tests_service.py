@@ -747,37 +747,57 @@ def test_endpoints_use_the_declared_defaults(client: TestClient) -> None:
         assert declared["render"] == app_module.DEFAULT_RENDER, (path, declared)
 
 
-def test_permanently_broken_pool_gives_up_instead_of_looping(client: TestClient, monkeypatch) -> None:
-    """Документ, на котором пул ломается всегда, не уходит в бесконечный цикл.
+def test_permanently_broken_pool_gives_up_without_poisoning_runtime(
+    client: TestClient, monkeypatch
+) -> None:
+    """Документ, валящий пул всегда, останавливается и не портит процесс.
 
-    Глобального бюджета пересозданий мало: его сбрасывает любой чужой успешно
-    обработанный документ, поэтому документ, валящий воркера сам по себе,
-    крутился бы вечно. Граница на документ должна остановить это независимо
-    от глобального счётчика.
+    Три инварианта. Повторы ограничены локально — глобального бюджета мало,
+    его сбрасывает любой чужой успешный документ. Сломанный экземпляр пула не
+    остаётся установленным, иначе следующий документ упадёт на нём же и
+    потратит ещё одно пересоздание. Потраченные на этот файл пересоздания
+    возвращаются: общий бюджет отличает единичный OOM от неисправного
+    окружения, и отравленный файл не должен помечать runtime нерабочим.
     """
     from concurrent.futures.process import BrokenProcessPool
 
     import ocr.concurrency as conc
     import ocr.pipeline as pipeline
 
+    conc.shutdown_pool()
+    conc._pool_restarts = 0
+    conc._pool_broken = False
+
     attempts = {"n": 0}
+    generation_before = conc.pool_generation()
 
     class AlwaysBrokenPool:
         def map(self, fn, jobs):
             attempts["n"] += 1
             raise BrokenProcessPool("воркер убит")
 
+    # Подменяется только выдача пула: восстановление, бюджет и поколения
+    # работают по-настоящему, иначе инварианты не проверяются.
     monkeypatch.setattr(pipeline.concurrency, "shared_pool", lambda: AlwaysBrokenPool())
     monkeypatch.setattr(pipeline.concurrency, "shared_pool_size", lambda: 4)
-    # Глобальный бюджет всегда разрешает пересоздание: проверяем именно
-    # локальную границу.
-    monkeypatch.setattr(pipeline.concurrency, "recycle_pool", lambda gen: True)
-    monkeypatch.setattr(pipeline.concurrency, "pool_generation", lambda: 0)
 
-    response = client.post(
-        "/ocr", files={"file": ("x.pdf", io.BytesIO(THREE_PAGES.read_bytes()), "application/pdf")}
-    )
+    try:
+        response = client.post(
+            "/ocr",
+            files={"file": ("x.pdf", io.BytesIO(THREE_PAGES.read_bytes()), "application/pdf")},
+        )
 
-    assert attempts["n"] == pipeline.MAX_DOCUMENT_POOL_RETRIES + 1, attempts
-    assert response.status_code >= 500, response.text
-    assert conc.pool_is_broken() is False, "локальная сдача не должна ломать весь runtime"
+        assert attempts["n"] == pipeline.MAX_DOCUMENT_POOL_RETRIES + 1, attempts
+        assert response.status_code >= 500, response.text
+
+        assert conc.pool_is_broken() is False, "один документ не вправе валить runtime"
+        assert conc._pool_restarts == 0, f"бюджет не возвращён: {conc._pool_restarts}"
+        assert conc._pool is None, "сломанный пул остался установленным"
+        assert conc.pool_generation() > generation_before
+
+        # И сервис по-прежнему готов: следующий запрос начнёт с живого пула.
+        assert client.get("/readyz").status_code == 200
+    finally:
+        conc._pool_restarts = 0
+        conc._pool_broken = False
+        conc.shutdown_pool()
