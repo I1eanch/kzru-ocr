@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import shutil
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
@@ -48,6 +49,22 @@ class TesseractEngine:
             raise EngineUnavailable("pytesseract не установлен")
         if shutil.which("tesseract") is None:
             raise EngineUnavailable("бинарь tesseract не найден в PATH")
+
+        # Tesseract при несуществующем `--tessdata-dir` не сообщает об
+        # ошибке, а молча берёт модели из вкомпилированного пути. Тогда
+        # распознавание идёт на весах, которых профиль не объявлял, и
+        # результат не соответствует заявленной конфигурации. Проверено
+        # вживую: со сломанным каталогом `/ocr` продолжал отвечать 200.
+        missing = [
+            lang
+            for lang in self.lang.split("+")
+            if lang and not Path(self.tessdata_dir, f"{lang}.traineddata").is_file()
+        ]
+        if missing:
+            raise EngineUnavailable(
+                f"в каталоге {self.tessdata_dir} нет моделей {missing}; "
+                "Tesseract подменил бы их другими без предупреждения"
+            )
 
     @property
     def tessdata_dir(self) -> str:
