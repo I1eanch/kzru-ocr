@@ -338,6 +338,9 @@ def test_partial_page_failure_surfaces_as_warning(client: TestClient, monkeypatc
             result.error = "искусственный сбой страницы"
         return result
 
+    # Подмена действует только в текущем процессе, поэтому страницы должны
+    # обрабатываться на месте: при размере пула 1 `_run_jobs` идёт inline.
+    monkeypatch.setattr(pipeline.concurrency, "shared_pool_size", lambda: 1)
     monkeypatch.setattr(pipeline, "_recognize_page", failing)
     with open("bench/scans/doc_006_ustav.pdf", "rb") as fh:
         multipage = fh.read()
@@ -366,6 +369,7 @@ def test_all_pages_failed_is_service_error_not_empty_success(client: TestClient,
         result.error = "EngineUnavailable: моделей нет"
         return result
 
+    monkeypatch.setattr(pipeline.concurrency, "shared_pool_size", lambda: 1)
     monkeypatch.setattr(pipeline, "_recognize_page", failing)
     response = client.post("/ocr", files={"file": ("x.pdf", io.BytesIO(_pdf_bytes()), "application/pdf")})
     assert response.status_code == 503, response.json()
