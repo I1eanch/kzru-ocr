@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import os
 import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -171,16 +172,45 @@ def test_readiness_fails_closed_without_tesseract(client: TestClient, monkeypatc
 
 def test_readiness_fails_closed_without_default_langs(client: TestClient, monkeypatch) -> None:
     """Нет языков профиля по умолчанию — не готов, даже если бинарь на месте."""
-    monkeypatch.setattr(app_module, "_tesseract_state", lambda: ("tesseract 5.3.0", ["eng"]))
+    monkeypatch.setattr(
+        app_module, "_tesseract_state", lambda tessdata_dir=None: ("tesseract 5.3.0", ["eng"])
+    )
     response = client.get("/readyz")
     assert response.status_code == 503
-    assert any("языковых моделей" in p for p in response.json()["problems"])
+    assert any("не видит языки" in p for p in response.json()["problems"])
 
 
 def test_readiness_ok_on_healthy_install(client: TestClient) -> None:
     response = client.get("/readyz")
     assert response.status_code == 200, response.json().get("problems")
     assert response.json()["status"] == "ready"
+
+
+def test_readiness_checks_the_directory_the_engine_uses(client: TestClient, monkeypatch, tmp_path) -> None:
+    """Готовность обязана смотреть в тот же каталог моделей, что и движок.
+
+    Прежняя версия спрашивала `tesseract --list-langs` без `--tessdata-dir` и
+    потому проверяла `TESSDATA_PREFIX`, тогда как движок запускается с
+    `--tessdata-dir`. Расхождение наблюдалось вживую: при сломанном
+    `TESSDATA_BEST` готовность отвечала 503, а распознавание продолжало
+    работать на пакетных моделях Debian — то есть на весах, которых профиль
+    не объявлял.
+    """
+    empty = tmp_path / "tessdata"
+    empty.mkdir()
+    monkeypatch.setattr(app_module, "_tessdata_dir", lambda profile: str(empty))
+
+    response = client.get("/readyz")
+    assert response.status_code == 503
+    problems = response.json()["problems"]
+    assert any("нет файлов моделей" in p for p in problems), problems
+
+
+def test_readiness_reports_engine_directory(client: TestClient) -> None:
+    """Каталог моделей виден в ответе — без него диагностика вслепую."""
+    body = client.get("/readyz").json()
+    assert body["tessdata_dir"]
+    assert Path(body["tessdata_dir"]).is_dir()
 
 
 # --------------------------------------------------------------------------

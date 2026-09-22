@@ -162,18 +162,35 @@ def _validate_request(profile: str, render: str) -> None:
 # --------------------------------------------------------------------------
 
 
-def _tesseract_state() -> tuple[str, list[str]]:
+def _tessdata_dir(profile) -> str:
+    """Каталог моделей, которым пользуется движок этого профиля.
+
+    Важно спрашивать именно его, а не `TESSDATA_PREFIX`: движок запускается с
+    `--tessdata-dir`, и это разные пути. Если проверять не тот каталог,
+    readiness расходится с реальностью — проверено: при сломанном
+    `TESSDATA_BEST` готовность отвечала 503, а распознавание продолжало
+    работать, потому что Tesseract молча откатывался на пакетные модели
+    Debian, то есть на другие веса, чем объявляет профиль.
+    """
+    from ocr.engines.tesseract import TESSDATA_BEST, TESSDATA_FAST
+
+    return TESSDATA_BEST if profile.tessdata == "best" else TESSDATA_FAST
+
+
+def _tesseract_state(tessdata_dir: str | None = None) -> tuple[str, list[str]]:
     binary = shutil.which("tesseract")
     if not binary:
         return "", []
     version_lines = subprocess.run(
         [binary, "--version"], capture_output=True, text=True, check=False
     ).stdout.splitlines()
+
+    cmd = [binary, "--list-langs"]
+    if tessdata_dir:
+        cmd += ["--tessdata-dir", tessdata_dir]
     langs = [
         ln.strip()
-        for ln in subprocess.run(
-            [binary, "--list-langs"], capture_output=True, text=True, check=False
-        ).stdout.splitlines()[1:]
+        for ln in subprocess.run(cmd, capture_output=True, text=True, check=False).stdout.splitlines()[1:]
         if ln.strip()
     ]
     return (version_lines[0] if version_lines else ""), langs
@@ -183,15 +200,26 @@ def _readiness() -> tuple[bool, dict[str, Any]]:
     """Проверяет ровно то, без чего профиль по умолчанию не отработает."""
     problems: list[str] = []
 
-    version, langs = _tesseract_state()
+    default_profile = PIPELINE_PROFILES["balanced"]
+    tessdata_dir = _tessdata_dir(default_profile)
+    version, langs = _tesseract_state(tessdata_dir)
+
     if not version:
         problems.append("бинарь tesseract не найден в PATH")
 
-    default_profile = PIPELINE_PROFILES["balanced"]
     required = [lang for lang in default_profile.lang.split("+") if lang]
-    missing = [lang for lang in required if lang not in langs]
-    if missing:
-        problems.append(f"нет языковых моделей профиля по умолчанию: {missing}")
+
+    # Файлы проверяются отдельно от `--list-langs`: при несуществующем
+    # каталоге Tesseract не сообщает об ошибке, а берёт модели из
+    # вкомпилированного пути. Тогда сервис работал бы на весах, которых
+    # профиль не объявлял.
+    missing_files = [lang for lang in required if not Path(tessdata_dir, f"{lang}.traineddata").is_file()]
+    if missing_files:
+        problems.append(f"в каталоге {tessdata_dir} нет файлов моделей: {missing_files}")
+
+    missing_langs = [lang for lang in required if lang not in langs]
+    if missing_langs:
+        problems.append(f"Tesseract не видит языки профиля по умолчанию: {missing_langs}")
 
     backends = available_backends()
     if DEFAULT_BACKEND not in backends:
@@ -201,6 +229,7 @@ def _readiness() -> tuple[bool, dict[str, Any]]:
         "tesseract": version,
         "langs": langs,
         "required_langs": required,
+        "tessdata_dir": tessdata_dir,
         "pdf_backends": backends,
         "pdf_backend_default": DEFAULT_BACKEND,
         "problems": problems,
