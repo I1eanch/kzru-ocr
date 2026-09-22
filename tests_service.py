@@ -747,57 +747,126 @@ def test_endpoints_use_the_declared_defaults(client: TestClient) -> None:
         assert declared["render"] == app_module.DEFAULT_RENDER, (path, declared)
 
 
-def test_permanently_broken_pool_gives_up_without_poisoning_runtime(
-    client: TestClient, monkeypatch
-) -> None:
-    """Документ, валящий пул всегда, останавливается и не портит процесс.
+class _AlwaysBrokenPool:
+    """Пул, который умирает на каждом запуске."""
 
-    Три инварианта. Повторы ограничены локально — глобального бюджета мало,
-    его сбрасывает любой чужой успешный документ. Сломанный экземпляр пула не
-    остаётся установленным, иначе следующий документ упадёт на нём же и
-    потратит ещё одно пересоздание. Потраченные на этот файл пересоздания
-    возвращаются: общий бюджет отличает единичный OOM от неисправного
-    окружения, и отравленный файл не должен помечать runtime нерабочим.
-    """
-    from concurrent.futures.process import BrokenProcessPool
+    def __init__(self, counter: dict) -> None:
+        self._counter = counter
 
+    def map(self, fn, jobs):
+        from concurrent.futures.process import BrokenProcessPool
+
+        self._counter["n"] += 1
+        raise BrokenProcessPool("воркер убит")
+
+
+def _reset_pool_state():
     import ocr.concurrency as conc
-    import ocr.pipeline as pipeline
 
     conc.shutdown_pool()
     conc._pool_restarts = 0
     conc._pool_broken = False
+    return conc
 
-    attempts = {"n": 0}
-    generation_before = conc.pool_generation()
 
-    class AlwaysBrokenPool:
-        def map(self, fn, jobs):
-            attempts["n"] += 1
-            raise BrokenProcessPool("воркер убит")
+def _post_multipage(client: TestClient):
+    return client.post(
+        "/ocr",
+        files={"file": ("x.pdf", io.BytesIO(THREE_PAGES.read_bytes()), "application/pdf")},
+    )
 
-    # Подменяется только выдача пула: восстановление, бюджет и поколения
-    # работают по-настоящему, иначе инварианты не проверяются.
-    monkeypatch.setattr(pipeline.concurrency, "shared_pool", lambda: AlwaysBrokenPool())
+
+def test_poisoned_document_gives_up_and_leaves_runtime_ready(
+    client: TestClient, monkeypatch
+) -> None:
+    """Документ, валящий пул, останавливается; сломанный экземпляр снят.
+
+    Сломанный пул нельзя оставлять установленным: следующий документ получил
+    бы его же и упал, не начав работу. При этом сдача на одном документе не
+    приговор процессу — готовность сохраняется.
+    """
+    import ocr.pipeline as pipeline
+
+    conc = _reset_pool_state()
+    counter = {"n": 0}
+    monkeypatch.setattr(pipeline.concurrency, "shared_pool", lambda: _AlwaysBrokenPool(counter))
     monkeypatch.setattr(pipeline.concurrency, "shared_pool_size", lambda: 4)
 
     try:
-        response = client.post(
-            "/ocr",
-            files={"file": ("x.pdf", io.BytesIO(THREE_PAGES.read_bytes()), "application/pdf")},
-        )
+        response = _post_multipage(client)
 
-        assert attempts["n"] == pipeline.MAX_DOCUMENT_POOL_RETRIES + 1, attempts
+        assert counter["n"] == pipeline.MAX_DOCUMENT_POOL_RETRIES + 1, counter
         assert response.status_code >= 500, response.text
-
+        assert conc._pool is None, "сломанный экземпляр остался установленным"
         assert conc.pool_is_broken() is False, "один документ не вправе валить runtime"
-        assert conc._pool_restarts == 0, f"бюджет не возвращён: {conc._pool_restarts}"
-        assert conc._pool is None, "сломанный пул остался установленным"
-        assert conc.pool_generation() > generation_before
+        assert client.get("/readyz").status_code == 200
+        # Следы пересозданий остаются: бюджет не возвращается, иначе
+        # глобальный предохранитель стал бы недостижимым.
+        assert conc._pool_restarts > 0, "бюджет обязан помнить эти пересоздания"
+    finally:
+        _reset_pool_state()
 
-        # И сервис по-прежнему готов: следующий запрос начнёт с живого пула.
+
+def test_successful_document_after_poisoned_one_resets_budget(
+    client: TestClient, monkeypatch
+) -> None:
+    """Успешный документ снимает следы, оставленные отравленным.
+
+    Иначе несколько проблемных файлов, разнесённых во времени, однажды
+    исчерпали бы бюджет и остановили исправный сервис.
+    """
+    import ocr.pipeline as pipeline
+
+    conc = _reset_pool_state()
+    counter = {"n": 0}
+    monkeypatch.setattr(pipeline.concurrency, "shared_pool", lambda: _AlwaysBrokenPool(counter))
+    monkeypatch.setattr(pipeline.concurrency, "shared_pool_size", lambda: 4)
+
+    try:
+        _post_multipage(client)
+        assert conc._pool_restarts > 0
+
+        # Дальше пул исправен: обработка идёт обычным путём.
+        monkeypatch.undo()
+        response = _post_multipage(client)
+
+        assert response.status_code == 200, response.text
+        assert conc._pool_restarts == 0, "успех не сбросил бюджет"
+        assert conc.pool_is_broken() is False
         assert client.get("/readyz").status_code == 200
     finally:
-        conc._pool_restarts = 0
-        conc._pool_broken = False
-        conc.shutdown_pool()
+        _reset_pool_state()
+
+
+def test_systemic_pool_failures_exhaust_budget_and_drop_readiness(
+    client: TestClient, monkeypatch
+) -> None:
+    """Непрекращающиеся смерти воркеров доводят бюджет до предела.
+
+    Это и есть смысл глобального предохранителя: сервис, падающий на каждом
+    документе, обязан перестать объявлять себя готовым, а не отвечать 200 на
+    проверку и 500 на работу.
+    """
+    import ocr.pipeline as pipeline
+
+    conc = _reset_pool_state()
+    counter = {"n": 0}
+    monkeypatch.setattr(pipeline.concurrency, "shared_pool", lambda: _AlwaysBrokenPool(counter))
+    monkeypatch.setattr(pipeline.concurrency, "shared_pool_size", lambda: 4)
+
+    try:
+        # Каждый документ тратит часть бюджета и ни один не проходит.
+        for _ in range(conc.MAX_POOL_RESTARTS + 2):
+            response = _post_multipage(client)
+            assert response.status_code >= 500, response.text
+            if conc.pool_is_broken():
+                break
+
+        assert conc.pool_is_broken() is True, (
+            f"бюджет не исчерпан: {conc._pool_restarts} из {conc.MAX_POOL_RESTARTS}"
+        )
+        ready = client.get("/readyz")
+        assert ready.status_code == 503, ready.text
+        assert ready.json()["status"] == "not_ready"
+    finally:
+        _reset_pool_state()
