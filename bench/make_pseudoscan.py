@@ -3,6 +3,10 @@
 Это бесплатный точный ground truth: эталон извлекается из исходного
 текстового слоя, а скан — растеризованная и деградированная картинка.
 
+Если рядом с исходным PDF лежит ``<name>.fields.json`` (истинные поля
+от ``make_sample_docs``), он копируется в ``--gt-dir`` — метрики полей
+тогда считаются по независимому ground truth, а не по разбору эталона.
+
 Использование::
 
     python -m bench.make_pseudoscan --src-dir bench/data \
@@ -18,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import shutil
 import sys
 from pathlib import Path
 
@@ -120,6 +125,11 @@ def process_pdf(
     out_doc.save(out_pdf, deflate=True)
     out_doc.close()
     gt_path.write_text("\n".join(gt_parts), encoding="utf-8")
+
+    # Sidecar с истинными полями — независимый от экстрактора ground truth.
+    sidecar = src.with_suffix(".fields.json")
+    if sidecar.is_file():
+        shutil.copyfile(sidecar, gt_path.with_suffix(".fields.json"))
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -11,12 +11,17 @@
 справка. Содержимое включает валидный по контрольной сумме БИН, ИИН,
 суммы прописью, даты в русском и казахском форматах, абзац на казахском
 со всеми национальными литерами, таблицу и блок подписи.
+
+Рядом с каждым PDF пишется ``<name>.fields.json`` — истинные значения
+полей (БИН/ИИН, суммы, даты ISO), записанные в момент подстановки в
+текст. Это независимый от экстрактора ground truth для ``bench.metrics``.
 """
 
 from __future__ import annotations
 
 import argparse
 import glob
+import json
 import random
 import sys
 import textwrap
@@ -234,6 +239,7 @@ def _make_ctx(rng: random.Random) -> dict:
         "bin1": _gen_number12(rng),
         "bin2": _gen_number12(rng),
         "iin": _gen_number12(rng),
+        "amount_int": amount,
         "amount": f"{amount:,}".replace(",", " "),
         "amount_words": amount_words,
         "date_ru": f"«{day:02d}» {RU_MONTHS[month]} {year} года",
@@ -246,9 +252,15 @@ def _make_ctx(rng: random.Random) -> dict:
     }
 
 
+def _record(truth: dict[str, list[str]], key: str, value: str) -> None:
+    """Истинное значение поля — в момент подстановки в текст, без разбора."""
+    if value not in truth[key]:
+        truth[key].append(value)
+
+
 # --- Жанры ----------------------------------------------------------------------
 
-def _build_ustav(b: _DocBuilder, c: dict) -> None:
+def _build_ustav(b: _DocBuilder, c: dict, truth: dict[str, list[str]]) -> None:
     b.title(f"УСТАВ ТОВАРИЩЕСТВА С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ «{c['org1']}»")
     b.para(
         f"1. Общие положения. Товарищество с ограниченной ответственностью "
@@ -256,14 +268,18 @@ def _build_ustav(b: _DocBuilder, c: dict) -> None:
         f"действует в соответствии с законодательством Республики Казахстан. "
         f"Место нахождения: город {c['city']}."
     )
+    _record(truth, "bin", c["bin1"])
     b.para(
         f"2. Уставный капитал Товарищества составляет {c['amount']} "
         f"({c['amount_words']}) тенге и формируется вкладами участников."
     )
+    _record(truth, "amounts", str(c["amount_int"]))
     b.para(
         f"3. Участник Товарищества: {c['person1']}, ИИН {c['iin']}. "
         f"Дата утверждения устава: {c['date_ru']} ({c['date_kz']})."
     )
+    _record(truth, "bin", c["iin"])
+    _record(truth, "dates", c["date_iso"])
     b.para("4. Распределение долей участников:")
     b.table(
         [
@@ -277,20 +293,25 @@ def _build_ustav(b: _DocBuilder, c: dict) -> None:
     b.para(KZ_PARAGRAPH)
 
 
-def _build_dogovor(b: _DocBuilder, c: dict) -> None:
+def _build_dogovor(b: _DocBuilder, c: dict, truth: dict[str, list[str]]) -> None:
     b.title(f"ДОГОВОР № {c['doc_no']} купли-продажи")
     b.para(f"г. {c['city']}                                                    {c['date_ru']}")
+    _record(truth, "dates", c["date_iso"])
     b.para(
         f"ТОО «{c['org1']}», БИН {c['bin1']}, именуемое «Продавец», в лице "
         f"директора {c['person1']}, и ТОО «{c['org2']}», БИН {c['bin2']}, "
         f"именуемое «Покупатель», в лице директора {c['person2']}, заключили "
         f"настоящий договор о нижеследующем."
     )
+    _record(truth, "bin", c["bin1"])
+    _record(truth, "bin", c["bin2"])
     b.para(
         f"1. Предмет договора. Продавец обязуется передать, а Покупатель — "
         f"принять и оплатить товар на сумму {c['amount']} ({c['amount_words']}) "
         f"тенге. Оплата производится до {c['date_iso']}."
     )
+    _record(truth, "amounts", str(c["amount_int"]))
+    _record(truth, "dates", c["date_iso"])
     b.para(
         f"2. Ответственность сторон. За нарушение сроков оплаты Покупатель "
         f"уплачивает пеню в размере 0,1% от суммы задолженности за каждый "
@@ -310,18 +331,22 @@ def _build_dogovor(b: _DocBuilder, c: dict) -> None:
     b.para(KZ_PARAGRAPH)
 
 
-def _build_spravka(b: _DocBuilder, c: dict) -> None:
+def _build_spravka(b: _DocBuilder, c: dict, truth: dict[str, list[str]]) -> None:
     b.title(f"СПРАВКА № {c['doc_no']}")
     b.para(f"Дата выдачи: {c['date_ru']} / {c['date_kz']}")
+    _record(truth, "dates", c["date_iso"])
     b.para(
         f"Настоящая справка выдана {c['person1']}, ИИН {c['iin']}, в "
         f"подтверждение того, что он(а) является работником ТОО «{c['org1']}» "
         f"(БИН {c['bin1']}), расположенного по адресу: город {c['city']}."
     )
+    _record(truth, "bin", c["iin"])
+    _record(truth, "bin", c["bin1"])
     b.para(
         f"Среднемесячная заработная плата за последние шесть месяцев "
         f"составляет {c['amount']} ({c['amount_words']}) тенге."
     )
+    _record(truth, "amounts", str(c["amount_int"]))
     b.para("Начисления по месяцам:")
     b.table(
         [
@@ -360,16 +385,19 @@ def _fill_to_pages(b: _DocBuilder, rng: random.Random, target_pages: int) -> Non
         i += 1
 
 
-def make_doc(rng: random.Random, genre: str, fontfile: str) -> fitz.Document:
-    """Один документ заданного жанра, 1-3 страницы."""
+def make_doc(
+    rng: random.Random, genre: str, fontfile: str
+) -> tuple[fitz.Document, dict[str, list[str]]]:
+    """Один документ заданного жанра, 1-3 страницы, и истинные поля."""
     doc = fitz.open()
     b = _DocBuilder(doc, fontfile)
     ctx = _make_ctx(rng)
-    _BUILDERS[genre](b, ctx)
+    truth: dict[str, list[str]] = {"bin": [], "amounts": [], "dates": []}
+    _BUILDERS[genre](b, ctx, truth)
     _fill_to_pages(b, rng, rng.randint(1, 3))
     left, right = _SIGNATURES[genre]
     b.signature(left, right)
-    return doc
+    return doc, truth
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -390,11 +418,16 @@ def main(argv: list[str] | None = None) -> int:
     for i in range(args.count):
         genre = GENRES[i % len(GENRES)]
         name = f"doc_{i:03d}_{genre}"
-        doc = make_doc(rng, genre, fontfile)
+        doc, truth = make_doc(rng, genre, fontfile)
         path = args.out_dir / f"{name}.pdf"
         doc.save(path, deflate=True)
         doc.close()
-        print(f"{path}  ({genre})")
+        sidecar = args.out_dir / f"{name}.fields.json"
+        sidecar.write_text(
+            json.dumps(truth, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        print(f"{path}  ({genre}) + {sidecar.name}")
     return 0
 
 

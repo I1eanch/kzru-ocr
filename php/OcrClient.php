@@ -42,7 +42,10 @@ final class OcrClient
     }
 
     /**
-     * Синхронное распознавание. Профили: fast | balanced | accurate.
+     * Синхронное распознавание.
+     *
+     * Профили запрашиваются у сервиса (`readiness()['profiles']`), а не
+     * зашиты здесь: набор профилей меняется вместе с сервисом.
      *
      * @return array{text:string,pages:array,fields:array,warnings:array,elapsed_s:float,mean_conf:float}
      */
@@ -73,10 +76,83 @@ final class OcrClient
         throw new RuntimeException("OCR-сервис недоступен после повторов: {$lastError}");
     }
 
-    /** Проверка живости сервиса и состава движков. */
+    /**
+     * Готовность сервиса. Бросает исключение, если сервис не готов (503),
+     * поэтому подходит для проверки перед пакетной обработкой.
+     */
+    public function readiness(): array
+    {
+        return $this->get('/readyz');
+    }
+
+    /** Живость процесса. Не проверяет зависимости — только что сервис отвечает. */
     public function health(): array
     {
-        $ch = curl_init($this->baseUrl . '/healthz');
+        return $this->get('/healthz');
+    }
+
+    /**
+     * Значения поля, пригодные для автоматического разбора.
+     *
+     * Для `bin` это статусы `valid` и `repaired`, для `dates` — только
+     * календарно валидные. Всё остальное требует ручной проверки и намеренно
+     * не возвращается: исправленный или непроверенный номер не должен
+     * выглядеть подтверждённым.
+     *
+     * @param array $fields блок `fields` из ответа сервиса
+     * @return string[]
+     */
+    public static function confirmedValues(array $fields, string $key): array
+    {
+        $items = $fields[$key] ?? [];
+        $out = [];
+        foreach ($items as $item) {
+            $status = $item['status'] ?? null;
+            if ($key === 'bin' && !in_array($status, ['valid', 'repaired'], true)) {
+                continue;
+            }
+            if ($key === 'dates' && $status !== 'valid') {
+                continue;
+            }
+            if (($item['value'] ?? null) !== null) {
+                $out[] = (string) $item['value'];
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Поля, которые обязан посмотреть оператор: исправленные и непроверенные
+     * номера, несуществующие даты, суммы с расхождением прописи.
+     *
+     * @return array<int, array{field:string, item:array}>
+     */
+    public static function needsReview(array $fields): array
+    {
+        $out = [];
+        foreach ($fields['bin'] ?? [] as $item) {
+            if (($item['requires_review'] ?? false) === true) {
+                $out[] = ['field' => 'bin', 'item' => $item];
+            }
+        }
+        foreach ($fields['dates'] ?? [] as $item) {
+            if (($item['status'] ?? null) === 'invalid') {
+                $out[] = ['field' => 'dates', 'item' => $item];
+            }
+        }
+        foreach ($fields['amounts'] ?? [] as $item) {
+            if (($item['words_match'] ?? null) === false) {
+                $out[] = ['field' => 'amounts', 'item' => $item];
+            }
+        }
+
+        return $out;
+    }
+
+    private function get(string $path): array
+    {
+        $ch = curl_init($this->baseUrl . $path);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT        => 5,
@@ -88,10 +164,11 @@ final class OcrClient
         curl_close($ch);
 
         if ($body === false) {
-            throw new RuntimeException("healthz недоступен: {$err}");
+            throw new RuntimeException("{$path} недоступен: {$err}");
         }
         if ($code !== 200) {
-            throw new RuntimeException("HTTP {$code} на healthz");
+            // 503 на /readyz — это штатный ответ «не готов», а не сбой связи.
+            throw new RuntimeException("HTTP {$code} на {$path}: " . substr((string) $body, 0, 200));
         }
 
         return $this->decode((string) $body);

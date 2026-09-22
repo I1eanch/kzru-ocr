@@ -24,6 +24,7 @@ from bench.metrics import (
     FieldStat,
     cer,
     compare_fields,
+    load_truth_fields,
     normalize_for_metric,
     wer,
 )
@@ -48,7 +49,12 @@ def _collect(gt_dir: Path, pred_dir: Path) -> tuple[dict[str, Path], dict[str, P
     return gt, pred
 
 
-def evaluate(name: str, gt_text: str, pred_text: str) -> DocMetrics:
+def evaluate(
+    name: str,
+    gt_text: str,
+    pred_text: str,
+    truth: dict[str, list[str]] | None = None,
+) -> DocMetrics:
     """Считает все метрики одного документа."""
     gt_s = normalize_for_metric(gt_text, "strict")
     pr_s = normalize_for_metric(pred_text, "strict")
@@ -60,9 +66,10 @@ def evaluate(name: str, gt_text: str, pred_text: str) -> DocMetrics:
         wer_strict=wer(gt_s, pr_s),
         cer_norm=cer(gt_n, pr_n),
         wer_norm=wer(gt_n, pr_n),
-        field_stats=compare_fields(gt_text, pred_text),
+        field_stats=compare_fields(gt_text, pred_text, truth),
         chars_gt=len(gt_n),
         chars_pred=len(pr_n),
+        fields_source="truth" if truth is not None else "extractor",
     )
 
 
@@ -97,6 +104,10 @@ def _aggregate(docs: list[DocMetrics]) -> dict:
             agg.found += st.found
             agg.correct += st.correct
 
+
+    fields_source = {"truth": 0, "extractor": 0}
+    for d in docs:
+        fields_source[d.fields_source] += 1
     return {
         "docs": n,
         "chars_gt": total_chars,
@@ -108,6 +119,7 @@ def _aggregate(docs: list[DocMetrics]) -> dict:
             "wer_norm": macro("wer_norm"),
         },
         "fields": fields,
+        "fields_source": fields_source,
     }
 
 
@@ -153,6 +165,11 @@ def _print_report(
     )
 
     print("\nfield accuracy:")
+    fs = agg["fields_source"]
+    print(
+        f"источник эталона полей: truth={fs['truth']} док., "
+        f"extractor={fs['extractor']} док."
+    )
     print(f"{'field':<10} {'expected':>8} {'found':>6} {'correct':>7} {'P':>7} {'R':>7} {'exact':>7}")
     for key in _FIELD_KEYS:
         st = agg["fields"].get(key)
@@ -161,6 +178,12 @@ def _print_report(
         print(
             f"{key:<10} {st.expected:>8} {st.found:>6} {st.correct:>7} "
             f"{st.precision:>7.4f} {st.recall:>7.4f} {st.exact:>7.4f}"
+        )
+    if fs["extractor"]:
+        print(
+            f"  ! {fs['extractor']} док. оценены экстрактором эталона: "
+            f"оценка циклична и завышена — сгенерируйте .fields.json "
+            f"через bench.make_sample_docs"
         )
 
     if worst > 0:
@@ -228,6 +251,7 @@ def _write_json(
             "micro": agg["micro"],
             "macro": agg["macro"],
             "fields": {k: _field_dict(v) for k, v in agg["fields"].items()},
+            "fields_source": agg["fields_source"],
         },
     }
     path.write_text(
@@ -277,12 +301,13 @@ def main(argv: list[str] | None = None) -> int:
     for name in sorted(gt_files):
         gt_text = gt_files[name].read_text(encoding="utf-8")
         pred_path = pred_files.get(name)
+        truth = load_truth_fields(args.gt_dir, name)
         if pred_path is None:
             missing.add(name)
             pred_text = ""
         else:
             pred_text = pred_path.read_text(encoding="utf-8")
-        docs.append(evaluate(name, gt_text, pred_text))
+        docs.append(evaluate(name, gt_text, pred_text, truth))
         norm_texts[name] = (
             normalize_for_metric(gt_text),
             normalize_for_metric(pred_text),

@@ -1,10 +1,11 @@
-PyMuPDF>=1.24
-opencv-python-headless>=4.9
-numpy>=1.26
-pytesseract>=0.3.10
-Pillow>=10.2
-fastapi>=0.110
-uvicorn[standard]>=0.29
-python-multipart>=0.0.9
-jiwer>=3.0
-rapidfuzz>=3.6
+# Production-зависимости. Версии зафиксированы по фактическому содержимому
+# образа kzru-ocr:latest (pip list, 2026-09-22). Полный lock с транзитивными
+# зависимостями — requirements.lock, его ставит Dockerfile.
+opencv-python-headless==5.0.0.93
+numpy==2.5.3
+pytesseract==0.3.13
+Pillow==12.3.0
+fastapi==0.141.1
+uvicorn[standard]==0.53.0
+python-multipart==0.0.32
+rapidfuzz==3.14.6

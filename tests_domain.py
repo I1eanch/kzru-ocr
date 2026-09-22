@@ -32,7 +32,7 @@ from ocr.domain.bin_checksum import (
     repair,
 )
 from ocr.domain.dates_ru_kk import find_dates
-from ocr.domain.fields import extract_fields, validate_text
+from ocr.domain.fields import confirmed_values, extract_fields, validate_text
 from ocr.domain.homoglyphs import fix_homoglyphs, normalize, normalize_unicode
 
 _FAILURES: list[str] = []
@@ -299,13 +299,39 @@ text = (f"Устав ТОО «Пример», БИН {bin_ok}, уставный 
         f"500 000 (пятьсот тысяч) тенге, дата составления 12.01.2026")
 f = extract_fields(text)
 check("extract_fields keys", set(f) == {"bin", "amounts", "dates"}, repr(f))
-check("extract_fields bin", f["bin"] == [bin_ok], repr(f["bin"]))
-check("extract_fields amounts", f["amounts"] == ["500000"], repr(f["amounts"]))
-check("extract_fields dates", f["dates"] == ["2026-01-12"], repr(f["dates"]))
+check("extract_fields bin value", confirmed_values(f, "bin") == [bin_ok], repr(f["bin"]))
+check(
+    "extract_fields bin status",
+    f["bin"][0]["status"] == "valid" and f["bin"][0]["requires_review"] is False,
+    repr(f["bin"]),
+)
+check("extract_fields amounts", confirmed_values(f, "amounts") == ["500000"], repr(f["amounts"]))
+check("extract_fields amounts words_match", f["amounts"][0]["words_match"] is True, repr(f["amounts"]))
+check("extract_fields dates", confirmed_values(f, "dates") == ["2026-01-12"], repr(f["dates"]))
+
+# Непрошедший проверку номер обязан остаться видимым, но без подтверждения:
+# иначе оператор не узнает, что в документе был похожий на БИН набор цифр.
+broken = extract_fields("БИН 150440007469 в договоре")
+check(
+    "unverified bin surfaced but not confirmed",
+    broken["bin"] and broken["bin"][0]["status"] in ("repaired", "unverified")
+    and broken["bin"][0]["requires_review"] is True,
+    repr(broken["bin"]),
+)
+
+# Несуществующая дата не должна выглядеть найденным полем.
+bad_date = extract_fields("составлен 31.02.2026 года")
+check(
+    "invalid date not confirmed",
+    confirmed_values(bad_date, "dates") == []
+    and bad_date["dates"][0]["status"] == "invalid"
+    and bad_date["dates"][0]["value"] is None,
+    repr(bad_date["dates"]),
+)
 
 spaced = f"{bin_ok[:4]} {bin_ok[4:8]} {bin_ok[8:]}"
 f = extract_fields(f"БИН {spaced} компании")
-check("extract_fields spaced BIN glued", f["bin"] == [bin_ok], repr(f["bin"]))
+check("extract_fields spaced BIN glued", confirmed_values(f, "bin") == [bin_ok], repr(f["bin"]))
 
 w = validate_text(text)
 check("validate_text clean", w == [], repr(w))

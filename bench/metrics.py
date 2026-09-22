@@ -5,20 +5,26 @@
 - ``normalized`` — NFC, унификация тире и кавычек, удаление soft hyphen,
   схлопывание пробелов и пустых строк, нижний регистр.
 
-Точность извлечения полей (БИН, суммы, даты) считается через
-``ocr.domain.fields.extract_fields`` — единую точку нормализации,
-общую с продакшен-пайплайном.
+Точность извлечения полей (БИН, суммы, даты) считается по независимому
+ground truth из ``<name>.fields.json`` (пишет ``make_sample_docs``), если
+sidecar есть; иначе эталон разбирается тем же
+``ocr.domain.fields.extract_fields`` — оценка циклична и завышена.
+Гипотеза всегда разбирается экстрактором, сравниваются значения из
+``confirmed_values`` — единой точки нормализации с продакшен-пайплайном.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Literal
 
 import jiwer
 
-from ocr.domain.fields import extract_fields
+from ocr.domain.fields import confirmed_values, extract_fields
 
 # Символы тире и кавычек, приводимые к ASCII в normalized-режиме.
 _DASHES = "‐‑‒–—―"
@@ -78,6 +84,10 @@ class FieldStat:
     found: int = 0
     correct: int = 0
 
+    #: Откуда взята эталонная сторона: sidecar ``truth`` или разбор
+    #: эталонного текста экстрактором (циклическая оценка).
+    source: Literal["truth", "extractor"] = "extractor"
+
     @property
     def precision(self) -> float:
         """Доля верных среди найденных; 0.0 при пустом found."""
@@ -111,23 +121,50 @@ class DocMetrics:
     field_stats: dict[str, FieldStat] = field(default_factory=dict)
     chars_gt: int = 0
     chars_pred: int = 0
+    #: Источник эталонной стороны полей: ``truth`` (sidecar) или
+    #: ``extractor`` (циклическая оценка по разбору эталона).
+    fields_source: Literal["truth", "extractor"] = "extractor"
 
 
-def compare_fields(gt_text: str, pred_text: str) -> dict[str, FieldStat]:
-    """Сравнивает извлечённые поля как множества по каждому ключу.
+def load_truth_fields(gt_dir: Path, name: str) -> dict[str, list[str]] | None:
+    """Истинные поля документа из sidecar ``<name>.fields.json``, если есть."""
+    path = gt_dir / f"{name}.fields.json"
+    if not path.is_file():
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return {key: [str(v) for v in data.get(key, [])] for key in data}
 
-    Ключи результата — объединение ключей ``extract_fields`` для эталона
-    и предсказания (по контракту: ``bin``, ``amounts``, ``dates``).
+
+def compare_fields(
+    gt_text: str,
+    pred_text: str,
+    truth: dict[str, list[str]] | None = None,
+) -> dict[str, FieldStat]:
+    """Сравнивает поля как множества значений по каждому ключу.
+
+    Эталонная сторона: ``truth`` из sidecar, если передан, иначе разбор
+    ``gt_text`` экстрактором — тогда оценка циклична (экстрактор меряет
+    сам себя) и завышена. Гипотеза всегда разбирается ``extract_fields``;
+    в сравнение идут только ``confirmed_values`` — подтверждённые значения.
     """
-    gt_fields = extract_fields(gt_text)
     pred_fields = extract_fields(pred_text)
+    source: Literal["truth", "extractor"] = "extractor"
+    if truth is not None:
+        source = "truth"
+        expected_map = {key: set(vals) for key, vals in truth.items()}
+    else:
+        gt_fields = extract_fields(gt_text)
+        expected_map = {
+            key: set(confirmed_values(gt_fields, key)) for key in gt_fields
+        }
     stats: dict[str, FieldStat] = {}
-    for key in sorted(set(gt_fields) | set(pred_fields)):
-        expected = set(gt_fields.get(key, []))
-        found = set(pred_fields.get(key, []))
+    for key in sorted(set(expected_map) | set(pred_fields)):
+        expected = expected_map.get(key, set())
+        found = set(confirmed_values(pred_fields, key))
         stats[key] = FieldStat(
             expected=len(expected),
             found=len(found),
             correct=len(expected & found),
+            source=source,
         )
     return stats

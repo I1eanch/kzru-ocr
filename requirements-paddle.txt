@@ -1,6 +1,9 @@
-# Опциональный движок. PyPI отдаёт колёса paddlepaddle только для
-# manylinux x86_64 — на arm64 этот файл не устанавливается, и это
+# Опциональный движок (таргет full). PyPI отдаёт колёса paddlepaddle только
+# для manylinux x86_64 — на arm64 этот файл не устанавливается, и это
 # ожидаемо: MVP работает на Tesseract, Paddle включается флагом
 # --engine paddle на amd64-хосте.
+# Версии зафиксированы: paddleocr привязан к тому же релизному поезду, что и
+# paddlepaddle (3.0.x тянет paddlex 3.0.0, собранный под paddlepaddle 3.0.0).
+# Транзитивный lock для этого таргета не ведём — см. docs/DEPLOY.md.
 paddlepaddle==3.0.0
-paddleocr>=3.0.0
+paddleocr==3.0.0

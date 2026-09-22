@@ -42,39 +42,100 @@ def _bin_candidates(text: str) -> list[str]:
     return out
 
 
-def extract_fields(text: str) -> dict[str, list[str]]:
-    """Нормализованные поля документа.
+def extract_fields(text: str) -> dict[str, list[dict]]:
+    """Поля документа со статусом проверки у каждого значения.
 
-    ``bin`` — только номера, прошедшие контрольную сумму сами или после
-    однозначного исправления; ``amounts`` — целые тенге строками без пробелов;
-    ``dates`` — ISO ``YYYY-MM-DD`` для валидных, исходная подстрока иначе.
+    Плоский список строк здесь был бы обманом. Номер, прошедший контрольную
+    сумму как прочитан, и номер, исправленный перебором по одной правдоподобной
+    гипотезе, выглядели бы одинаково, хотя доверие к ним разное. Поэтому
+    каждое значение несёт собственный статус, а потребитель решает, что с ним
+    делать.
 
-    Номера, не прошедшие проверку, в поля НЕ попадают — они уходят в
-    ``bin_checksum_failed``. На сильно деградированных сканах регулярное
-    выражение цепляет мусорные 12-значные последовательности: замер на наборе
-    с деградацией `heavy` дал 13 найденных «БИН» против 6 настоящих, то есть
-    precision 0.46. Контрольная сумма отсеивает такой мусор почти полностью:
-    случайная последовательность проходит её примерно в одном случае из
-    одиннадцати. Выдать меньше полей и честно пометить проблему лучше, чем
-    подсунуть в проверку госдокумента правдоподобный несуществующий номер.
+    ``bin`` — ``status``:
+
+    * ``valid`` — контрольный разряд сошёлся на прочитанном номере;
+    * ``repaired`` — номер исправлен, валидный кандидат был ровно один;
+    * ``unverified`` — контрольный разряд не сошёлся либо кандидатов
+      несколько; ``value`` равен прочитанному, подтверждением не является.
+
+    ``requires_review`` истинно для всего, кроме ``valid``. Даже ``valid`` не
+    означает, что номер верен: контрольный разряд не замечает ошибку в 11-й
+    позиции (вес 11 ≡ 0 mod 11), а случайная 12-значная последовательность
+    проходит проверку примерно в одном случае из одиннадцати.
+
+    ``dates`` — ``status`` ``valid`` (``value`` в ISO) либо ``invalid``
+    (``value`` равен ``None``, дата не существует в календаре).
+
+    ``amounts`` — ``words_match``: ``True``, если сумма прописью рядом совпала
+    с цифровой записью, ``False`` при расхождении, ``None``, если прописи не
+    было и сверять было не с чем.
     """
-    bins: list[str] = []
+    bins: list[dict] = []
+    seen_bins: set[str] = set()
     for num in _bin_candidates(text):
-        res = repair(num)
-        if res.status not in ("valid", "fixed"):
+        if num in seen_bins:
             continue
-        if res.value not in bins:
-            bins.append(res.value)
+        seen_bins.add(num)
+        res = repair(num)
+        if res.status == "valid":
+            status, value, review = "valid", res.value, False
+        elif res.status == "fixed":
+            status, value, review = "repaired", res.value, True
+        else:
+            status, value, review = "unverified", num, True
+        bins.append(
+            {
+                "value": value,
+                "raw": num,
+                "status": status,
+                "candidates": list(res.candidates),
+                "requires_review": review,
+            }
+        )
 
-    amounts = sorted({str(v) for v in find_amounts(text)}, key=int)
+    pairs = {check.digits: check for check in find_amount_pairs(text)}
+    amounts: list[dict] = []
+    for value in sorted(set(find_amounts(text))):
+        check = pairs.get(value)
+        amounts.append(
+            {
+                "value": str(value),
+                "raw": check.raw if check else str(value),
+                "words_match": check.ok if check else None,
+            }
+        )
 
-    dates: list[str] = []
+    dates: list[dict] = []
+    seen_dates: set[str] = set()
     for hit in find_dates(text):
-        value = hit.iso if hit.valid else hit.raw
-        if value not in dates:
-            dates.append(value)
+        if hit.raw in seen_dates:
+            continue
+        seen_dates.add(hit.raw)
+        dates.append(
+            {
+                "value": hit.iso if hit.valid else None,
+                "raw": hit.raw,
+                "status": "valid" if hit.valid else "invalid",
+            }
+        )
 
     return {"bin": bins, "amounts": amounts, "dates": dates}
+
+
+def confirmed_values(fields: dict[str, list[dict]], key: str) -> list[str]:
+    """Значения, которые прошли проверку и пригодны для автоматического разбора.
+
+    Для ``bin`` это ``valid`` и ``repaired``; для ``dates`` — только
+    календарно валидные; для ``amounts`` — все найденные. Отдельная функция
+    нужна, чтобы потребители не повторяли правило фильтрации у себя и не
+    разошлись в нём.
+    """
+    items = fields.get(key) or []
+    if key == "bin":
+        return [i["value"] for i in items if i["status"] in ("valid", "repaired")]
+    if key == "dates":
+        return [i["value"] for i in items if i["status"] == "valid" and i["value"]]
+    return [i["value"] for i in items]
 
 
 def validate_text(text: str) -> list[tuple[str, str]]:

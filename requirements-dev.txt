@@ -1,0 +1,9 @@
+# Зависимости для bench и тестов (таргет dev). Не входят в runtime-образ.
+# Версии зафиксированы по фактической установке в python:3.12-slim-bookworm
+# (2026-09-22). PyMuPDF здесь, а не в runtime: ocr/pdf_backend.py импортирует
+# его лениво внутри функций, production-бэкенд — poppler-utils.
+-r requirements.txt
+PyMuPDF==1.28.2
+jiwer==4.0.0
+httpx==0.28.1
+pytest==9.1.1

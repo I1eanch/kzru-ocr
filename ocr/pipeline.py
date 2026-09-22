@@ -18,17 +18,16 @@ bake-off показал ошибку на цифрах в 6-11 раз выше �
 
 from __future__ import annotations
 
-import multiprocessing as mp
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import cv2
 import numpy as np
 
-from . import raster
+from . import concurrency, raster
+from .concurrency import available_cpus  # noqa: F401  — публичное имя сохранено
 from .domain.fields import extract_fields, validate_text
 from .ensemble import arbitrate
 from .layout import xy_cut
@@ -337,63 +336,36 @@ def process_pdf(
     return doc
 
 
-def available_cpus() -> int:
-    """Сколько ядер реально доступно процессу.
-
-    `os.cpu_count()` возвращает число ядер машины и игнорирует и affinity, и
-    cgroup-квоту. В контейнере с `--cpus=2` на 8-ядерном хосте это приводит к
-    запуску 7 процессов на 2 ядра: они конкурируют, и обработка становится
-    медленнее последовательной. Проверено замером: 8 страниц при 7 воркерах на
-    одном доступном ядре — 46 с против 14.6 с в один процесс.
-    """
-    limits: list[int] = []
-
-    try:
-        limits.append(len(os.sched_getaffinity(0)))
-    except AttributeError:  # не Linux
-        pass
-
-    # cgroup v2
-    try:
-        quota, period = Path("/sys/fs/cgroup/cpu.max").read_text().split()
-        if quota != "max":
-            limits.append(max(1, int(float(quota) / float(period))))
-    except (OSError, ValueError):
-        pass
-
-    # cgroup v1
-    try:
-        quota = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us").read_text())
-        period = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us").read_text())
-        if quota > 0 and period > 0:
-            limits.append(max(1, quota // period))
-    except (OSError, ValueError):
-        pass
-
-    if not limits:
-        limits.append(os.cpu_count() or 1)
-    return max(1, min(limits))
-
-
 def _run_jobs(jobs: list[PageJob], workers: int | None) -> list[PageResult]:
+    """Распознаёт страницы, уважая общий бюджет процесса.
+
+    `workers=None` — штатный путь: страницы уходят в общий пул из
+    `ocr.concurrency`, единый на всё приложение. Параллельные запросы делят
+    один бюджет ядер вместо того, чтобы каждый поднимать собственный пул, и
+    не платят заново за старт воркеров на каждом документе.
+
+    `workers=1` — последовательно в текущем процессе: одиночному Tesseract
+    выгоднее занять все ядра самому (замерено: 1.64 с против 1.99 с на
+    странице A4 в однопоточном режиме).
+
+    Явное `workers > 1` — только для замеров масштабирования
+    (`bench/measure_parallel.py`): поднимает отдельный пул нужного размера и
+    сознательно игнорирует общий бюджет. Сервис этот путь не использует.
+    """
     if not jobs:
         return []
+
     if workers is None:
-        workers = max(1, min(len(jobs), available_cpus()))
+        if len(jobs) == 1 or concurrency.shared_pool_size() == 1:
+            return [_recognize_page(job) for job in jobs]
+        return list(concurrency.shared_pool().map(_recognize_page, jobs))
+
     if workers == 1:
-        # Один воркер — пусть Tesseract использует все ядра сам: замерено
-        # wall 1.64 с против 1.99 с в однопоточном режиме на странице A4.
         return [_recognize_page(job) for job in jobs]
 
-    # Tesseract ИГНОРИРУЕТ OMP_NUM_THREADS и берёт около 3.3 потоков на
-    # страницу (wall 1.64 с при 5.43 с CPU). Ограничивает его только
-    # OMP_THREAD_LIMIT. Без этого N воркеров требуют 3.3*N ядер, и на
-    # 4-ядерной машине параллелизм замедляет работу вместо ускорения.
+    import multiprocessing as mp
+
     os.environ["OMP_THREAD_LIMIT"] = "1"
     os.environ.setdefault("OMP_NUM_THREADS", "1")
-
-    # Контекст spawn, а не fork: родительский процесс уже работал с OpenCV
-    # (растеризация, оценка масштаба), и fork копирует его пул потоков в
-    # неконсистентном состоянии — воркеры зависают вместо работы.
     with ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("spawn")) as pool:
         return list(pool.map(_recognize_page, jobs))
