@@ -30,23 +30,15 @@ import sys
 
 name, path = sys.argv[1], sys.argv[2]
 with open(path, encoding="utf-8") as fh:
-    report = json.load(fh)
-agg = report.get("aggregate", report)
+    agg = json.load(fh)["aggregate"]
 
-
-def pick(*keys):
-    for key in keys:
-        if key in agg:
-            return agg[key]
-    return float("nan")
-
-
+micro, macro = agg["micro"], agg["macro"]
 print(
     f"{name:<12} "
-    f"{pick('micro_cer_strict', 'cer_strict'):>10.4f} "
-    f"{pick('micro_cer_norm', 'cer_norm'):>10.4f} "
-    f"{pick('macro_wer_strict', 'wer_strict'):>10.4f} "
-    f"{pick('macro_wer_norm', 'wer_norm'):>10.4f}"
+    f"{micro['cer_strict']:>10.4f} "
+    f"{micro['cer_norm']:>10.4f} "
+    f"{macro['wer_strict']:>10.4f} "
+    f"{macro['wer_norm']:>10.4f}"
 )
 PY
 done
