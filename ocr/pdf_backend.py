@@ -38,6 +38,15 @@ class BackendUnavailable(RuntimeError):
     """Бэкенд не установлен в этом окружении."""
 
 
+class InvalidPdf(ValueError):
+    """Файл не является читаемым PDF.
+
+    Наследуется от ValueError сознательно: для вызывающей стороны это ошибка
+    входных данных, а не сбой сервиса, и HTTP-слой отвечает на неё 422, а не
+    500.
+    """
+
+
 @dataclass(slots=True)
 class PageInfo:
     index: int
@@ -75,10 +84,13 @@ class PopplerDocument:
                 raise BackendUnavailable(f"не найден {tool}: установите poppler-utils")
 
         self.path = path
-        info = _run(["pdfinfo", path])
+        try:
+            info = _run(["pdfinfo", path])
+        except RuntimeError as exc:
+            raise InvalidPdf(f"файл не читается как PDF: {exc}") from exc
         match = _PAGES_RE.search(info)
         if not match:
-            raise RuntimeError(f"pdfinfo не сообщил число страниц для {path}")
+            raise InvalidPdf(f"pdfinfo не сообщил число страниц для {path}")
         self.page_count = int(match.group(1))
         self._sizes: dict[int, tuple[float, float]] = {}
         self._texts: list[str] | None = None
@@ -193,7 +205,10 @@ class PyMuPDFDocument:
             raise BackendUnavailable("pymupdf не установлен") from exc
 
         self.path = path
-        self._doc = pymupdf.open(path)
+        try:
+            self._doc = pymupdf.open(path)
+        except Exception as exc:
+            raise InvalidPdf(f"файл не читается как PDF: {exc}") from exc
         self.page_count = self._doc.page_count
 
     def page_info(self, index: int) -> PageInfo:
