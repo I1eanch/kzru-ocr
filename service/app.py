@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse
 
 from ocr.pdf_backend import DEFAULT_BACKEND, available_backends
 from ocr.pipeline import MAX_BYTES, MAX_PAGES, PIPELINE_PROFILES, process_pdf
+from ocr.render import PROFILES, render_document
 
 app = FastAPI(title="kzru-ocr", version="0.1.0")
 
