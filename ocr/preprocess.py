@@ -175,7 +175,11 @@ def remove_stamp(bgr_or_gray: np.ndarray) -> np.ndarray:
     return bgr_or_gray
 
 
-def remove_rules(binary: np.ndarray, min_fraction: float = 0.25) -> np.ndarray:
+def remove_rules(
+    binary: np.ndarray,
+    min_fraction_h: float = 0.25,
+    min_fraction_v: float = 0.05,
+) -> np.ndarray:
     """Убирает линии рамки таблиц с бинаризованного изображения.
 
     Линии сетки сливаются с глифами, и Tesseract на обрамлённой таблице теряет
@@ -183,13 +187,18 @@ def remove_rules(binary: np.ndarray, min_fraction: float = 0.25) -> np.ndarray:
     та искажённой. Морфологическое открытие длинным ядром выделяет протяжённые
     штрихи, не затрагивая черты букв.
 
-    `min_fraction` — какую долю стороны должна занимать линия, чтобы считаться
-    линейкой; 0.25 отсекает подчёркивания отдельных слов.
+    Пороги для двух направлений разные, и это существенно. Горизонтальная
+    линия таблицы тянется почти на всю ширину, а вертикальная — лишь на
+    высоту таблицы: при пороге 25% высоты страницы она остаётся на месте,
+    Tesseract читает её как `|` или `[`, и эти псевдосимволы заполняют
+    межколоночные коридоры — таблица перестаёт распознаваться как таблица.
+    Отсюда 5% высоты для вертикали: линия через несколько строк попадает под
+    порог, а буквы `l`, `I` и цифра `1` высотой около 1% — нет.
     """
     inv = 255 - binary
     h, w = binary.shape
-    h_len = max(20, int(w * min_fraction))
-    v_len = max(20, int(h * min_fraction))
+    h_len = max(20, int(w * min_fraction_h))
+    v_len = max(20, int(h * min_fraction_v))
 
     horizontal = cv2.morphologyEx(inv, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (h_len, 1)))
     vertical = cv2.morphologyEx(inv, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, v_len)))
