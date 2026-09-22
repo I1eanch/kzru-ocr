@@ -201,7 +201,7 @@ docker run --rm kzru-ocr:latest python tests_domain.py | tail -1
 
 ```bash
 # 3. Сквозная проверка на сгенерированном документе
-docker run --rm -e PYTHONPATH=/app -w /app kzru-ocr:latest sh -c '
+docker run --rm -w /app kzru-ocr:latest sh -c '
   python -m bench.make_sample_docs --out-dir /tmp/d --count 2 --seed 1 &&
   python -m bench.make_pseudoscan --src-dir /tmp/d --out-dir /tmp/s --gt-dir /tmp/g --seed 1 &&
   python -m ocr.cli --in-dir /tmp/s --out-dir /tmp/p &&
@@ -355,7 +355,7 @@ foreach ($result['warnings'] as $w) {
 подбирается замером, а не на глаз:
 
 ```bash
-docker run --rm -v "$PWD":/data -w /app -e PYTHONPATH=/app kzru-ocr:latest \
+docker run --rm -v "$PWD":/data -w /app kzru-ocr:latest \
   sh -c 'cd /app && sh bench/grid.sh /data/scans /data/gt balanced'
 ```
 
@@ -432,7 +432,7 @@ docker run --rm kzru-ocr:latest python tests_domain.py
 не нужны:
 
 ```bash
-docker run --rm -v "$PWD":/data -w /app -e PYTHONPATH=/app kzru-ocr:latest sh -c '
+docker run --rm -v "$PWD":/data -w /app kzru-ocr:latest sh -c '
   python -m bench.make_sample_docs --out-dir /data/bench/data --count 8 --seed 42
   python -m bench.make_pseudoscan --src-dir /data/bench/data \
       --out-dir /data/bench/scans --gt-dir /data/bench/gt \
@@ -462,7 +462,7 @@ your-data/
 ```
 
 ```bash
-docker run --rm -v /path/to/your-data:/data -w /app -e PYTHONPATH=/app kzru-ocr:latest sh -c '
+docker run --rm -v /path/to/your-data:/data -w /app kzru-ocr:latest sh -c '
   python -m ocr.cli --in-dir /data/scans --out-dir /data/pred --profile balanced
   python -m bench.run_bench --pred-dir /data/pred --gt-dir /data/gt \
       --csv /data/report.csv --json /data/report.json --worst 10'
@@ -490,7 +490,7 @@ CER = 1.0 и помечается `MISSING` — он не пропускаетс
 Если нужно выбрать движок или параметры под ваши документы:
 
 ```bash
-docker run --rm -v /path/to/your-data:/data -w /app -e PYTHONPATH=/app kzru-ocr:latest \
+docker run --rm -v /path/to/your-data:/data -w /app kzru-ocr:latest \
   python -m bench.bakeoff --scans /data/scans --gt /data/gt --only tesseract
 ```
 
@@ -502,7 +502,7 @@ docker run --rm -v /path/to/your-data:/data -w /app -e PYTHONPATH=/app kzru-ocr:
 ### 5. Замер производительности
 
 ```bash
-docker run --rm -v "$PWD":/data -w /app -e PYTHONPATH=/app kzru-ocr:latest \
+docker run --rm -v "$PWD":/data -w /app kzru-ocr:latest \
   python -m bench.measure_parallel --pdf /data/bench/scans/doc_001.pdf --repeat 8
 ```
 

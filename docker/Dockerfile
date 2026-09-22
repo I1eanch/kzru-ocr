@@ -59,6 +59,10 @@ COPY tests_domain.py ./
 # (bench/bakeoff.py) и используется профилями по умолчанию.
 COPY models/kzru_doc.traineddata /opt/tessdata_best/
 
+# PYTHONPATH прописан в образе, чтобы `python -m ocr.cli` работал из любого
+# рабочего каталога: пользователь монтирует свои данные в /data и запускает
+# команду оттуда, не думая про пути пакета.
+ENV PYTHONPATH=/app
 ENV TESSDATA_PREFIX=/opt/tessdata_best
 EXPOSE 8099
 
